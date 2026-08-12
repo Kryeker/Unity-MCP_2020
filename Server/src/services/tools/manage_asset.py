@@ -50,6 +50,11 @@ async def manage_asset(
                          "Page size for pagination. Recommended: 25 (smaller for LLM-friendly responses)."] | None = None,
     page_number: Annotated[int | float | str,
                            "Page number for pagination (1-based)."] | None = None,
+    dry_run: Annotated[
+        bool,
+        "Preview only for delete/move: report the files that would be affected (asset + .meta) "
+        "without executing. Snapshots are still taken on real execution (see manage_snapshots).",
+    ] = False,
 ) -> dict[str, Any]:
     unity_instance = await get_unity_instance_from_context(ctx)
 
@@ -104,8 +109,12 @@ async def manage_asset(
         "filterType": filter_type,
         "filterDateAfter": filter_date_after,
         "pageSize": page_size,
-        "pageNumber": page_number
+        "pageNumber": page_number,
     }
+
+    # Only forward dry_run when explicitly requested (C# defaults to false anyway).
+    if dry_run:
+        params_dict["dry_run"] = True
 
     # Remove None values to avoid sending unnecessary nulls
     params_dict = {k: v for k, v in params_dict.items() if v is not None}

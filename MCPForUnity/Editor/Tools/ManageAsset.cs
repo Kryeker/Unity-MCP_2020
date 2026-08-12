@@ -92,12 +92,13 @@ namespace MCPForUnity.Editor.Tools
                         var properties = @params["properties"] as JObject;
                         return ModifyAsset(path, properties);
                     case "delete":
-                        return DeleteAsset(path);
+                        return DeleteAsset(path, @params["dry_run"]?.ToObject<bool>() ?? false);
                     case "duplicate":
                         return DuplicateAsset(path, @params["destination"]?.ToString());
                     case "move": // Often same as rename if within Assets/
                     case "rename":
-                        return MoveOrRenameAsset(path, @params["destination"]?.ToString());
+                        return MoveOrRenameAsset(path, @params["destination"]?.ToString(),
+                            @params["dry_run"]?.ToObject<bool>() ?? false);
                     case "search":
                         return SearchAssets(@params);
                     case "get_info":
@@ -493,7 +494,7 @@ namespace MCPForUnity.Editor.Tools
             }
         }
 
-        private static object DeleteAsset(string path)
+        private static object DeleteAsset(string path, bool dryRun = false)
         {
             if (string.IsNullOrEmpty(path))
                 return new ErrorResponse("'path' is required for delete.");
@@ -501,17 +502,28 @@ namespace MCPForUnity.Editor.Tools
             if (!AssetExists(fullPath))
                 return new ErrorResponse($"Asset not found at path: {fullPath}");
 
+            // Files that would be removed (asset + sibling .meta; folders expanded recursively).
+            var affected = SnapshotService.ExpandPaths(new[] { fullPath });
+            if (dryRun)
+            {
+                return new SuccessResponse(
+                    $"Dry run: {affected.Count} file(s) would be deleted for '{fullPath}'.",
+                    new { dryRun = true, path = fullPath, files = affected });
+            }
+
+            string snapshotId = SnapshotService.Capture(new[] { fullPath });
+
             try
             {
                 bool success = AssetDatabase.DeleteAsset(fullPath);
                 if (success)
                 {
-                    // AssetDatabase.Refresh(); // DeleteAsset usually handles refresh
-                    return new SuccessResponse($"Asset '{fullPath}' deleted successfully.");
+                    return new SuccessResponse(
+                        $"Asset '{fullPath}' deleted successfully.",
+                        new { deleted = fullPath, files = affected.Count, snapshot_id = snapshotId });
                 }
                 else
                 {
-                    // This might happen if the file couldn't be deleted (e.g., locked)
                     return new ErrorResponse(
                         $"Failed to delete asset '{fullPath}'. Check logs or if the file is locked."
                     );
@@ -571,7 +583,7 @@ namespace MCPForUnity.Editor.Tools
             }
         }
 
-        private static object MoveOrRenameAsset(string path, string destinationPath)
+        private static object MoveOrRenameAsset(string path, string destinationPath, bool dryRun = false)
         {
             if (string.IsNullOrEmpty(path))
                 return new ErrorResponse("'path' is required for move/rename.");
@@ -591,6 +603,15 @@ namespace MCPForUnity.Editor.Tools
             // Ensure destination directory exists
             EnsureDirectoryExists(Path.GetDirectoryName(destPath));
 
+            if (dryRun)
+            {
+                return new SuccessResponse(
+                    $"Dry run: '{sourcePath}' would move to '{destPath}'.",
+                    new { dryRun = true, from = sourcePath, to = destPath });
+            }
+
+            string snapshotId = SnapshotService.Capture(new[] { sourcePath });
+
             try
             {
                 // Validate will return an error string if failed, null if successful
@@ -605,10 +626,9 @@ namespace MCPForUnity.Editor.Tools
                 string guid = AssetDatabase.MoveAsset(sourcePath, destPath);
                 if (!string.IsNullOrEmpty(guid)) // MoveAsset returns the new GUID on success
                 {
-                    // AssetDatabase.Refresh(); // MoveAsset usually handles refresh
                     return new SuccessResponse(
                         $"Asset moved/renamed from '{sourcePath}' to '{destPath}'.",
-                        GetAssetData(destPath)
+                        new { moved = true, from = sourcePath, to = destPath, snapshot_id = snapshotId }
                     );
                 }
                 else

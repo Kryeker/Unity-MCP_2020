@@ -65,6 +65,8 @@ NON_DESTRUCTIVE = {
     "manage_input",
     # Reads/writes session confirmation settings (EditorPrefs only, no project assets).
     "manage_permissions",
+    # Rollback restores files to a captured snapshot (recoverable, user-requested undo).
+    "manage_snapshots",
     # Reads counters / starts a profiler session; writes no project asset.
     "manage_profiler",
     # Generate into a staging area; the import step is a separate tool.
