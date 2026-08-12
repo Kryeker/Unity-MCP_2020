@@ -39,6 +39,7 @@ READ_ONLY = {
     "unity_docs",
     "unity_reflect",
     "validate_script",
+    "wait_for_idle",
 }
 
 NON_DESTRUCTIVE = {
@@ -52,6 +53,8 @@ NON_DESTRUCTIVE = {
     "set_active_instance",
     # Toggles which tools are visible to this session.
     "manage_tools",
+    # Observes a compile session; trigger=true may request one (never destroys assets).
+    "wait_for_compile",
     # Reads counters / starts a profiler session; writes no project asset.
     "manage_profiler",
     # Generate into a staging area; the import step is a separate tool.

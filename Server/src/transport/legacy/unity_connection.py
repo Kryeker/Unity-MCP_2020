@@ -817,7 +817,8 @@ def send_command_with_retry(
     instance_id: str | None = None,
     max_retries: int | None = None,
     retry_ms: int | None = None,
-    retry_on_reload: bool = True
+    retry_on_reload: bool = True,
+    total_timeout: float | None = None
 ) -> dict[str, Any] | MCPResponse:
     """Send a command to a Unity instance, waiting politely through Unity reloads.
 
@@ -829,6 +830,9 @@ def send_command_with_retry(
         retry_ms: Delay between retries in milliseconds
         retry_on_reload: If False, don't retry when Unity is reloading (for commands
             that trigger compilation/reload and shouldn't be re-sent)
+        total_timeout: Overall wall-clock budget in seconds; overrides
+            config.command_total_timeout (default 90s). Passed by wait_for_idle /
+            wait_for_compile whose waits legitimately exceed the default.
 
     Returns:
         Response dictionary or MCPResponse from Unity
@@ -868,6 +872,8 @@ def send_command_with_retry(
     max_wait_s = max(0.0, min(max_wait_s, 20.0))
 
     total_timeout = max(0.0, float(getattr(config, "command_total_timeout", 90.0)))
+    if total_timeout is not None:
+        total_timeout = max(0.0, float(total_timeout))
     deadline = time.monotonic() + total_timeout if total_timeout > 0 else None
 
     # If retry_on_reload=False, disable connection-level retries too (issue #577)
@@ -951,7 +957,8 @@ async def async_send_command_with_retry(
     loop=None,
     max_retries: int | None = None,
     retry_ms: int | None = None,
-    retry_on_reload: bool = True
+    retry_on_reload: bool = True,
+    total_timeout: float | None = None
 ) -> dict[str, Any] | MCPResponse:
     """Async wrapper that runs the blocking retry helper in a thread pool.
 
@@ -963,6 +970,8 @@ async def async_send_command_with_retry(
         max_retries: Maximum number of retries for reload states
         retry_ms: Delay between retries in milliseconds
         retry_on_reload: If False, don't retry when Unity is reloading
+        total_timeout: Overall wall-clock budget in seconds; overrides
+            config.command_total_timeout (see send_command_with_retry).
 
     Returns:
         Response dictionary or MCPResponse on error
@@ -975,7 +984,8 @@ async def async_send_command_with_retry(
             None,
             lambda: send_command_with_retry(
                 command_type, params, instance_id=instance_id, max_retries=max_retries,
-                retry_ms=retry_ms, retry_on_reload=retry_on_reload),
+                retry_ms=retry_ms, retry_on_reload=retry_on_reload,
+                total_timeout=total_timeout),
         )
 
         # After a successful command, check if the connection was freshly

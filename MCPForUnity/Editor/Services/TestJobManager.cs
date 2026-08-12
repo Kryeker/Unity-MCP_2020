@@ -41,6 +41,10 @@ namespace MCPForUnity.Editor.Services
         public string Error { get; set; }
         public TestRunResult Result { get; set; }
         public long InitTimeoutMs { get; set; }
+
+        /// <summary>JobRegistry handle while the job is in flight; gates wait_for_idle.</summary>
+        [JsonIgnore]
+        public string RegistryJobId { get; set; }
     }
 
     /// <summary>
@@ -110,6 +114,7 @@ namespace MCPForUnity.Editor.Services
                     job.FinishedUnixMs = now;
                     job.LastUpdateUnixMs = now;
                     McpLog.Warn($"[TestJobManager] Manually cleared stuck job {_currentJobId}");
+                    UnregisterJob(job);
                     cleared = true;
                 }
 
@@ -231,9 +236,18 @@ namespace MCPForUnity.Editor.Services
                                 currentJob.Status = TestJobStatus.Failed;
                                 currentJob.Error = "Job orphaned after domain reload";
                                 currentJob.FinishedUnixMs = now;
+                                UnregisterJob(currentJob);
                                 _currentJobId = null;
                             }
                         }
+                    }
+
+                    // Re-register surviving running jobs so wait_for_idle keeps waiting across the reload.
+                    if (!string.IsNullOrEmpty(_currentJobId) && Jobs.TryGetValue(_currentJobId, out var restoredJob)
+                        && restoredJob.Status == TestJobStatus.Running
+                        && string.IsNullOrEmpty(restoredJob.RegistryJobId))
+                    {
+                        restoredJob.RegistryJobId = JobRegistry.Register("run_tests", "test");
                     }
                 }
             }
@@ -338,6 +352,7 @@ namespace MCPForUnity.Editor.Services
                 }
                 Jobs[jobId] = job;
                 _currentJobId = jobId;
+                job.RegistryJobId = JobRegistry.Register("run_tests", "test");
             }
             PersistToSessionState(force: true);
 
@@ -382,6 +397,7 @@ namespace MCPForUnity.Editor.Services
                 job.Error = null;
                 job.Result = resultPayload;
                 job.CurrentTestFullName = null;
+                UnregisterJob(job);
                 _currentJobId = null;
             }
             PersistToSessionState(force: true);
@@ -678,11 +694,21 @@ namespace MCPForUnity.Editor.Services
 
                 if (_currentJobId == jobId)
                 {
+                    UnregisterJob(existing);
                     _currentJobId = null;
                 }
             }
             PersistToSessionState(force: true);
         }
+
+        /// <summary>Drops a finished/canceled job from the JobRegistry so wait_for_idle can pass.</summary>
+        private static void UnregisterJob(TestJob job)
+        {
+            if (job != null && !string.IsNullOrEmpty(job.RegistryJobId))
+            {
+                JobRegistry.Unregister(job.RegistryJobId);
+                job.RegistryJobId = null;
+            }
+        }
     }
 }
-

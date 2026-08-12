@@ -23,6 +23,10 @@ namespace MCPForUnity.Editor.Services
         public string Error { get; set; }
         public string ResultVersion { get; set; }
         public string ResultName { get; set; }
+
+        /// <summary>JobRegistry handle while the job is in flight; gates wait_for_idle.</summary>
+        [JsonIgnore]
+        public string RegistryJobId { get; set; }
     }
 
     internal static class PackageJobManager
@@ -111,6 +115,12 @@ namespace MCPForUnity.Editor.Services
                         if (job.Status == PackageJobStatus.Running)
                         {
                             TryRecoverJob(job, now);
+                        }
+
+                        // Re-register survivors so wait_for_idle keeps waiting across the reload.
+                        if (job.Status == PackageJobStatus.Running)
+                        {
+                            job.RegistryJobId = JobRegistry.Register("manage_packages", "package");
                         }
 
                         Jobs[pj.job_id] = job;
@@ -280,6 +290,7 @@ namespace MCPForUnity.Editor.Services
             lock (LockObj)
             {
                 Jobs[jobId] = job;
+                job.RegistryJobId = JobRegistry.Register("manage_packages", "package");
             }
             PersistToSessionState();
             return jobId;
@@ -300,8 +311,19 @@ namespace MCPForUnity.Editor.Services
                 job.Error = error;
                 job.ResultVersion = version;
                 job.ResultName = name;
+                UnregisterJob(job);
             }
             PersistToSessionState();
+        }
+
+        /// <summary>Drops a finished/canceled job from the JobRegistry so wait_for_idle can pass.</summary>
+        internal static void UnregisterJob(PackageJob job)
+        {
+            if (job != null && !string.IsNullOrEmpty(job.RegistryJobId))
+            {
+                JobRegistry.Unregister(job.RegistryJobId);
+                job.RegistryJobId = null;
+            }
         }
 
         public static PackageJob GetJob(string jobId)

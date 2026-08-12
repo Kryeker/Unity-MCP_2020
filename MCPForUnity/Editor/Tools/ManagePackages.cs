@@ -207,7 +207,10 @@ namespace MCPForUnity.Editor.Tools
                     long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                     PackageJobManager.TryRecoverJob(job, nowMs);
                     if (job.Status != PackageJobStatus.Running)
+                    {
+                        PackageJobManager.UnregisterJob(job);
                         PackageJobManager.PersistToSessionState();
+                    }
                 }
             }
 
