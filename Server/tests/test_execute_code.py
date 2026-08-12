@@ -162,3 +162,36 @@ def test_replay_omits_irrelevant_params(mock_unity):
     assert "code" not in mock_unity["params"]
     assert "limit" not in mock_unity["params"]
     assert "safety_checks" not in mock_unity["params"]
+
+
+# --- P0-1: execution_mode / capture_logs / log_limit / timeout_s ---
+
+def test_execute_defaults_mode_sync_and_capture_logs(mock_unity):
+    asyncio.run(execute_code(SimpleNamespace(), action="execute", code="return 1;"))
+    assert mock_unity["params"]["execution_mode"] == "sync"
+    assert mock_unity["params"]["capture_logs"] is True
+    assert mock_unity["params"]["log_limit"] == 200
+    assert mock_unity["params"]["timeout_s"] == 60
+
+
+def test_execute_forwards_coroutine_mode(mock_unity):
+    asyncio.run(execute_code(
+        SimpleNamespace(), action="execute", code="yield return null;",
+        execution_mode="coroutine", timeout_s=30, capture_logs=False))
+    assert mock_unity["params"]["execution_mode"] == "coroutine"
+    assert mock_unity["params"]["timeout_s"] == 30
+    assert mock_unity["params"]["capture_logs"] is False
+
+
+def test_execute_clamps_log_limit_and_timeout(mock_unity):
+    asyncio.run(execute_code(
+        SimpleNamespace(), action="execute", code="return 1;",
+        log_limit=9999, timeout_s=9999))
+    assert mock_unity["params"]["log_limit"] == 200
+    assert mock_unity["params"]["timeout_s"] == 600
+
+
+def test_execute_non_execute_actions_omit_new_params(mock_unity):
+    asyncio.run(execute_code(SimpleNamespace(), action="get_history"))
+    assert "execution_mode" not in mock_unity["params"]
+    assert "capture_logs" not in mock_unity["params"]

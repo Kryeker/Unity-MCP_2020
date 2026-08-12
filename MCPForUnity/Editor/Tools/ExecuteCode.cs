@@ -1,14 +1,18 @@
 using System;
 using System.CodeDom.Compiler;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Threading.Tasks;
 using MCPForUnity.Editor.Helpers;
+using MCPForUnity.Editor.Services;
 using MCPForUnity.Runtime.Helpers;
 using Microsoft.CSharp;
 using Newtonsoft.Json.Linq;
+using UnityEditor;
 using UnityEngine;
 
 namespace MCPForUnity.Editor.Tools
@@ -19,22 +23,55 @@ namespace MCPForUnity.Editor.Tools
         private const int MaxCodeLength = 50000;
         private const int MaxHistoryEntries = 50;
         private const int MaxHistoryCodePreview = 500;
+        private const int MaxLogRing = 500;
+        private const int MaxLogEntriesPerRun = 200;
         internal const int WrapperLineOffset = 10;
         private const string WrapperClassName = "MCPDynamicCode";
         private const string WrapperMethodName = "Execute";
-
         private const string ActionExecute = "execute";
         private const string ActionGetHistory = "get_history";
         private const string ActionClearHistory = "clear_history";
         private const string ActionReplay = "replay";
 
+        private const string ModeSync = "sync";
+        private const string ModeCoroutine = "coroutine";
+
         private static readonly List<HistoryEntry> _history = new List<HistoryEntry>();
         private static string[] _cachedAssemblyPaths;
+
+        // Global ring buffer of editor log messages, captured via Application.logMessageReceived
+        // (main thread). Each execute call snapshots a cursor and returns the entries added while
+        // it ran — sync or coroutine. The buffer survives domain reloads? No: statics reset, so
+        // the ring restarts empty after a reload, which is fine — a reload also kills any
+        // in-flight coroutine, and its interruption is reported separately.
+        private static readonly List<LogEntry> _logRing = new List<LogEntry>(MaxLogRing + 1);
+
+        // Set by coroutine code via SetCoroutineResult; reset at the start of each coroutine run.
+        private static object _coroutineResult;
+        private static CoroutineHost _coroutineHost;
+        private static readonly object _coroutineLock = new object();
+
+        // Unity throttles the player loop (and with it the coroutine pump) when the editor
+        // window loses focus. Coroutine executions force runInBackground while they run,
+        // reference-counted so concurrent coroutines restore the user's setting correctly.
+        private static int _activeCoroutines;
 
         [UnityEditor.InitializeOnLoadMethod]
         private static void OnDomainReload()
         {
             _cachedAssemblyPaths = null;
+            _coroutineResult = null;
+            _coroutineHost = null;
+            lock (_logRing)
+            {
+                _logRing.Clear();
+            }
+            lock (_codedomReadableCache)
+            {
+                _codedomReadableCache.Clear();
+            }
+            Application.logMessageReceived -= OnLogMessage;
+            Application.logMessageReceived += OnLogMessage;
             RoslynCompiler.ResetCache();
         }
 
@@ -54,7 +91,7 @@ namespace MCPForUnity.Editor.Tools
             "for (;;)",
         };
 
-        public static object HandleCommand(JObject @params)
+        public static async Task<object> HandleCommand(JObject @params)
         {
             if (@params == null)
                 return new ErrorResponse("Parameters cannot be null.");
@@ -69,20 +106,20 @@ namespace MCPForUnity.Editor.Tools
             switch (action)
             {
                 case ActionExecute:
-                    return HandleExecute(@params);
+                    return await HandleExecute(@params);
                 case ActionGetHistory:
                     return HandleGetHistory(@params);
                 case ActionClearHistory:
                     return HandleClearHistory();
                 case ActionReplay:
-                    return HandleReplay(@params);
+                    return await HandleReplay(@params);
                 default:
                     return new ErrorResponse(
                         $"Unknown action: '{action}'. Valid actions: {ActionExecute}, {ActionGetHistory}, {ActionClearHistory}, {ActionReplay}");
             }
         }
 
-        private static object HandleExecute(JObject @params)
+        private static async Task<object> HandleExecute(JObject @params)
         {
             string code = @params["code"]?.ToString();
             if (string.IsNullOrWhiteSpace(code))
@@ -93,6 +130,12 @@ namespace MCPForUnity.Editor.Tools
 
             bool safetyChecks = @params["safety_checks"]?.Value<bool>() ?? true;
             string compiler = @params["compiler"]?.ToString()?.ToLowerInvariant() ?? "auto";
+            string executionMode = @params["execution_mode"]?.ToString()?.ToLowerInvariant() ?? ModeSync;
+            if (executionMode != ModeSync && executionMode != ModeCoroutine)
+                return new ErrorResponse($"Unknown execution_mode: '{executionMode}'. Valid modes: {ModeSync}, {ModeCoroutine}.");
+            bool captureLogs = @params["capture_logs"]?.Value<bool>() ?? true;
+            int logLimit = Mathf.Clamp(@params["log_limit"]?.Value<int>() ?? MaxLogEntriesPerRun, 1, MaxLogEntriesPerRun);
+            int timeoutSeconds = Mathf.Clamp(@params["timeout_s"]?.Value<int>() ?? 60, 1, 600);
 
             if (safetyChecks)
             {
@@ -104,17 +147,27 @@ namespace MCPForUnity.Editor.Tools
             try
             {
                 var startTime = DateTime.UtcNow;
-                var result = CompileAndExecute(code, compiler);
+                int logCursor = captureLogs ? SnapshotLogCursor() : -1;
+
+                object result;
+                if (executionMode == ModeCoroutine)
+                    result = await InvokeCoroutineAsync(code, compiler, timeoutSeconds);
+                else
+                    result = CompileAndExecute(code, compiler);
+
                 var elapsed = (DateTime.UtcNow - startTime).TotalMilliseconds;
 
-                AddToHistory(code, result, elapsed, safetyChecks, compiler);
+                if (captureLogs)
+                    result = AttachLogs(result, logCursor, logLimit);
+
+                AddToHistory(code, result, elapsed, safetyChecks, compiler, executionMode);
                 return result;
             }
             catch (Exception e)
             {
                 McpLog.Error($"[ExecuteCode] Execution failed: {e}");
                 var errorResult = new ErrorResponse($"Execution failed: {e.Message}");
-                AddToHistory(code, errorResult, 0, safetyChecks, compiler);
+                AddToHistory(code, errorResult, 0, safetyChecks, compiler, executionMode);
                 return errorResult;
             }
         }
@@ -154,7 +207,7 @@ namespace MCPForUnity.Editor.Tools
             return new SuccessResponse($"Cleared {count} history entries.");
         }
 
-        private static object HandleReplay(JObject @params)
+        private static async Task<object> HandleReplay(JObject @params)
         {
             if (_history.Count == 0)
                 return new ErrorResponse("No execution history to replay.");
@@ -170,35 +223,177 @@ namespace MCPForUnity.Editor.Tools
                 code = entry.code,
                 safety_checks = entry.safetyChecksEnabled,
                 compiler = entry.compiler ?? "auto",
+                execution_mode = entry.executionMode ?? ModeSync,
             });
-            return HandleExecute(replayParams);
+            return await HandleExecute(replayParams);
+        }
+
+        // ──────────────────── Log capture ────────────────────
+
+        private sealed class LogEntry
+        {
+            public string message;
+            public string type;      // "error" / "warning" / "log"
+            public string timestamp; // yyyy-MM-ddTHH:mm:ss.fffZ
+        }
+
+        private static void OnLogMessage(string message, string stackTrace, LogType type)
+        {
+            lock (_logRing)
+            {
+                _logRing.Add(new LogEntry
+                {
+                    message = message ?? string.Empty,
+                    type = TypeName(type),
+                    timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                });
+                if (_logRing.Count > MaxLogRing)
+                    _logRing.RemoveRange(0, _logRing.Count - MaxLogRing);
+            }
+        }
+
+        private static string TypeName(LogType type)
+        {
+            switch (type)
+            {
+                case LogType.Error:
+                case LogType.Exception:
+                case LogType.Assert:
+                    return "error";
+                case LogType.Warning:
+                    return "warning";
+                default:
+                    return "log";
+            }
+        }
+
+        private static int SnapshotLogCursor()
+        {
+            lock (_logRing)
+            {
+                return _logRing.Count;
+            }
+        }
+
+        /// <summary>
+        /// Attaches the log entries added since <paramref name="cursor"/> to the response's
+        /// data payload. Works on any response shape (SuccessResponse or ErrorResponse);
+        /// when the response has no data, the logs are still reported.
+        /// </summary>
+        private static object AttachLogs(object result, int cursor, int logLimit)
+        {
+            if (cursor < 0)
+                return result;
+
+            List<LogEntry> captured;
+            lock (_logRing)
+            {
+                int start = Math.Max(0, cursor);
+                int count = _logRing.Count - start;
+                if (count <= 0)
+                    return result;
+                captured = _logRing.GetRange(start, Math.Min(count, logLimit));
+            }
+
+            var logs = captured.Select(e => new
+            {
+                message = e.message,
+                type = e.type,
+                timestamp = e.timestamp,
+            }).ToArray();
+
+            JObject payload;
+            if (result is SuccessResponse sr)
+            {
+                JObject data = CoerceData(sr.Data);
+                data["logs"] = JArray.FromObject(logs);
+                data["logs_total"] = _logRing.Count - cursor;
+                payload = JObject.FromObject(new
+                {
+                    success = true,
+                    message = sr.Message,
+                    data = data,
+                });
+            }
+            else if (result is ErrorResponse er)
+            {
+                JObject data = CoerceData(er.Data);
+                data["logs"] = JArray.FromObject(logs);
+                data["logs_total"] = _logRing.Count - cursor;
+                payload = JObject.FromObject(new
+                {
+                    success = false,
+                    error = er.Error,
+                    data = data,
+                });
+            }
+            else
+            {
+                return result;
+            }
+
+            return payload;
+        }
+
+        /// <summary>Response data may be an anonymous object (InvokeCompiled) or a JObject; normalize to JObject.</summary>
+        private static JObject CoerceData(object data)
+        {
+            if (data is JObject jo)
+                return jo;
+            if (data != null)
+            {
+                try { return JObject.FromObject(data); }
+                catch { /* fall through */ }
+            }
+            return new JObject();
         }
 
         // ──────────────────── Compilation ────────────────────
 
         private static object CompileAndExecute(string code, string compiler)
         {
-            string wrappedSource = WrapUserCode(code);
+            var compiled = CompileToAssembly(WrapUserCode(code), compiler, out var usedCompiler, out var error);
+            if (compiled == null)
+                return error;
+            return InvokeCompiled(compiled, usedCompiler);
+        }
+
+        /// <summary>
+        /// Compiles the wrapped source and returns the assembly; on failure returns null and
+        /// sets <paramref name="error"/> to the ErrorResponse to surface.
+        /// </summary>
+        private static Assembly CompileToAssembly(string wrappedSource, string compiler,
+            out string usedCompiler, out object error)
+        {
+            error = null;
+            usedCompiler = null;
             string[] assemblyPaths = GetAssemblyPaths();
 
             Assembly compiled;
-            string usedCompiler;
-
             switch (compiler)
             {
                 case "roslyn":
                     if (!RoslynCompiler.IsAvailable)
-                        return new ErrorResponse("Roslyn (Microsoft.CodeAnalysis) is not available. Install it via NuGet or use compiler='codedom'.");
+                    {
+                        error = new ErrorResponse("Roslyn (Microsoft.CodeAnalysis) is not available. Install it via NuGet or use compiler='codedom'.");
+                        return null;
+                    }
                     compiled = RoslynCompiler.Compile(wrappedSource, assemblyPaths, out var roslynErrors);
                     if (compiled == null)
-                        return new ErrorResponse("Compilation failed", new { errors = OffsetErrors(roslynErrors), compiler = "roslyn" });
+                    {
+                        error = new ErrorResponse("Compilation failed", new { errors = OffsetErrors(roslynErrors), compiler = "roslyn" });
+                        return null;
+                    }
                     usedCompiler = "roslyn";
                     break;
 
                 case "codedom":
                     compiled = CodeDomCompile(wrappedSource, assemblyPaths, out var codedomErrors);
                     if (compiled == null)
-                        return new ErrorResponse("Compilation failed", new { errors = OffsetErrors(codedomErrors), compiler = "codedom" });
+                    {
+                        error = new ErrorResponse("Compilation failed", new { errors = OffsetErrors(codedomErrors), compiler = "codedom" });
+                        return null;
+                    }
                     usedCompiler = "codedom";
                     break;
 
@@ -207,20 +402,26 @@ namespace MCPForUnity.Editor.Tools
                     {
                         compiled = RoslynCompiler.Compile(wrappedSource, assemblyPaths, out var autoErrors);
                         if (compiled == null)
-                            return new ErrorResponse("Compilation failed", new { errors = OffsetErrors(autoErrors), compiler = "roslyn" });
+                        {
+                            error = new ErrorResponse("Compilation failed", new { errors = OffsetErrors(autoErrors), compiler = "roslyn" });
+                            return null;
+                        }
                         usedCompiler = "roslyn";
                     }
                     else
                     {
                         compiled = CodeDomCompile(wrappedSource, assemblyPaths, out var autoFallbackErrors);
                         if (compiled == null)
-                            return new ErrorResponse("Compilation failed", new { errors = OffsetErrors(autoFallbackErrors), compiler = "codedom" });
+                        {
+                            error = new ErrorResponse("Compilation failed", new { errors = OffsetErrors(autoFallbackErrors), compiler = "codedom" });
+                            return null;
+                        }
                         usedCompiler = "codedom";
                     }
                     break;
             }
 
-            return InvokeCompiled(compiled, usedCompiler);
+            return compiled;
         }
 
         private static object InvokeCompiled(Assembly assembly, string compilerUsed)
@@ -345,12 +546,98 @@ namespace MCPForUnity.Editor.Tools
             bool hasNetstandard = allPaths.Any(p =>
                 string.Equals(Path.GetFileNameWithoutExtension(p), "netstandard", StringComparison.OrdinalIgnoreCase));
 
-            if (!hasNetstandard)
-                return allPaths;
+            var filtered = allPaths;
+            if (hasNetstandard)
+            {
+                filtered = allPaths.Where(p =>
+                    !_codedomDuplicateAssemblies.Contains(Path.GetFileNameWithoutExtension(p))).ToArray();
+            }
 
-            return allPaths.Where(p =>
-                !_codedomDuplicateAssemblies.Contains(Path.GetFileNameWithoutExtension(p))).ToArray();
+            // CodeDom compiles with the .NET Framework csc, which rejects assemblies built for
+            // netstandard2.1+ / .NET Core — e.g. com.unity.nuget.newtonsoft-json@3.x and
+            // collab-proxy's bundled Newtonsoft fail with "does not contain valid metadata",
+            // taking down the whole compile. AssemblyName.GetAssemblyName still succeeds on
+            // those, so probe the target framework instead and drop unreadable ones; code that
+            // needs those types then fails with a clear "type not found" instead of a cryptic
+            // metadata error. Roslyn is unaffected.
+            var readable = new List<string>();
+            foreach (var path in filtered)
+            {
+                if (IsCodeDomReadable(path))
+                    readable.Add(path);
+                else
+                    McpLog.Warn($"[ExecuteCode] CodeDom: skipping unreadable assembly {Path.GetFileName(path)}");
+            }
+            return readable.ToArray();
         }
+
+        private static readonly Dictionary<string, bool> _codedomReadableCache =
+            new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// True when the CodeDom compiler can consume this assembly. Mono's mcs (the compiler
+        /// behind CSharpCodeProvider on Unity's .NET 4.x runtime) rejects assemblies carrying
+        /// C# 8 nullable metadata (NullableContextAttribute / NullableAttribute): prebuilt
+        /// nuget assemblies — e.g. com.unity.nuget.newtonsoft-json@3.x, collab-proxy's bundled
+        /// Newtonsoft — fail the whole compile with "does not contain valid metadata", while
+        /// assemblies the editor itself builds (no nullable attributes; verified on 2020.3)
+        /// load fine. Probe for the attribute names in the #Strings heap.
+        /// </summary>
+        private static bool IsCodeDomReadable(string path)
+        {
+            bool cached;
+            lock (_codedomReadableCache)
+            {
+                if (_codedomReadableCache.TryGetValue(path, out cached))
+                    return cached;
+            }
+
+            try
+            {
+                byte[] bytes = File.ReadAllBytes(path);
+                cached = !ContainsAscii(bytes, "NullableContextAttribute")
+                    && !ContainsAscii(bytes, "NullableAttribute");
+                if (!cached)
+                    McpLog.Warn($"[ExecuteCode] CodeDom: skipping nullable-metadata assembly {Path.GetFileName(path)}");
+            }
+            catch (Exception e)
+            {
+                // Unreadable for an unexpected reason — let csc decide rather than dropping
+                // an assembly the user may actually need.
+                McpLog.Warn($"[ExecuteCode] CodeDom probe failed for {Path.GetFileName(path)}: {e.Message}");
+                cached = true;
+            }
+
+            lock (_codedomReadableCache)
+            {
+                _codedomReadableCache[path] = cached;
+            }
+            return cached;
+        }
+
+        /// <summary>Plain-ASCII substring search over raw file bytes (the #Strings heap stores type names verbatim).</summary>
+        private static bool ContainsAscii(byte[] haystack, string needle)
+        {
+            var n = Encoding.ASCII.GetBytes(needle);
+            if (n.Length == 0 || n.Length > haystack.Length)
+                return false;
+            for (int i = 0; i <= haystack.Length - n.Length; i++)
+            {
+                bool match = true;
+                for (int j = 0; j < n.Length; j++)
+                {
+                    if (haystack[i + j] != n[j])
+                    {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match)
+                    return true;
+            }
+            return false;
+        }
+
 
         // ──────────────────── Shared helpers ────────────────────
 
@@ -371,6 +658,218 @@ namespace MCPForUnity.Editor.Tools
             sb.AppendLine("    }");
             sb.AppendLine("}");
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Coroutine-mode wrapper: the user body lives in a method returning IEnumerator, so it
+        /// may contain <c>yield return</c> (WaitForSeconds, null, AsyncOperation, nested
+        /// IEnumerator...). Line offset matches <see cref="WrapperLineOffset"/>.
+        /// </summary>
+        private static string WrapUserCodeCoroutine(string code)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("using System;");
+            sb.AppendLine("using System.Collections;");
+            sb.AppendLine("using System.Collections.Generic;");
+            sb.AppendLine("using System.Linq;");
+            sb.AppendLine("using System.Reflection;");
+            sb.AppendLine("using UnityEngine;");
+            sb.AppendLine("using UnityEditor;");
+            sb.AppendLine($"public static class {WrapperClassName}");
+            sb.AppendLine("{");
+            sb.AppendLine($"    public static IEnumerator {WrapperMethodName}()");
+            sb.AppendLine("    {");
+            sb.AppendLine(code);
+            sb.AppendLine("    }");
+            sb.AppendLine("}");
+            return sb.ToString();
+        }
+
+        // ──────────────────── Coroutine mode ────────────────────
+
+        /// <summary>
+        /// Sets the result value a coroutine-mode execution returns. Call from user code:
+        /// <c>MCPForUnity.Editor.Tools.ExecuteCode.SetCoroutineResult("done");</c>
+        /// </summary>
+        public static void SetCoroutineResult(object result)
+        {
+            _coroutineResult = result;
+        }
+
+        private static async Task<object> InvokeCoroutineAsync(string code, string compiler, int timeoutSeconds)
+        {
+            var compiled = CompileToAssembly(WrapUserCodeCoroutine(code), compiler, out var usedCompiler, out var error);
+            if (compiled == null)
+                return error;
+
+            var type = compiled.GetType(WrapperClassName);
+            var method = type?.GetMethod(WrapperMethodName, BindingFlags.Public | BindingFlags.Static);
+            if (method == null)
+                return new ErrorResponse("Internal error: failed to find Execute method.");
+
+            var tcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            // Gate wait_for_idle on this coroutine while it runs.
+            string jobId = JobRegistry.Register("execute_code", "coroutine");
+            EnterCoroutine();
+
+            // Wall-clock timeout watchdog on the thread pool: the coroutine pump can stall
+            // when the editor window is unfocused, so the Update-based timeout would never
+            // fire — this guarantees the call returns even then.
+            var watchdogCts = new System.Threading.CancellationTokenSource();
+            Task.Delay(TimeSpan.FromSeconds(timeoutSeconds), watchdogCts.Token)
+                .ContinueWith(t =>
+                {
+                    if (!t.IsCanceled)
+                        tcs.TrySetResult(new ErrorResponse(
+                            $"Coroutine timed out after {timeoutSeconds}s (wall clock). The coroutine was stopped; any work it had queued is abandoned."));
+                }, TaskScheduler.Default);
+
+            try
+            {
+                lock (_coroutineLock)
+                {
+                    _coroutineResult = null;
+                    var go = new GameObject("MCPForUnity_ExecuteCodeHost");
+                    go.hideFlags = HideFlags.HideInHierarchy | HideFlags.DontSave;
+                    var host = go.AddComponent<CoroutineHost>();
+                    host.Compiler = usedCompiler;
+                    host.Tcs = tcs;
+                    host.TimeoutSeconds = timeoutSeconds;
+                    host.StartedAt = EditorApplication.timeSinceStartup;
+                    host.StartCoroutine(host.Run(method));
+                    _coroutineHost = host;
+                }
+
+                return await tcs.Task.ConfigureAwait(true);
+            }
+            finally
+            {
+                watchdogCts.Cancel();
+                watchdogCts.Dispose();
+                JobRegistry.Unregister(jobId);
+                ExitCoroutine();
+            }
+        }
+
+        private static void EnterCoroutine()
+        {
+            if (System.Threading.Interlocked.Increment(ref _activeCoroutines) == 1)
+                Application.runInBackground = true;
+        }
+
+        private static void ExitCoroutine()
+        {
+            if (System.Threading.Interlocked.Decrement(ref _activeCoroutines) <= 0)
+            {
+                _activeCoroutines = 0;
+                Application.runInBackground = false;
+            }
+        }
+
+        /// <summary>
+        /// Runs a user coroutine on Unity's own coroutine pump. The wrapping iterator forwards
+        /// every MoveNext result to the pump (so yield instructions behave natively) while
+        /// catching user exceptions into the response — Unity's bare "Coroutine failed" log
+        /// carries no structured error. The user enumerator is disposed on every exit path
+        /// (a C# iterator's finally blocks run only on Dispose, not on a caught throw).
+        /// </summary>
+        private sealed class CoroutineHost : MonoBehaviour
+        {
+            public string Compiler;
+            public TaskCompletionSource<object> Tcs;
+            public double TimeoutSeconds;
+            public double StartedAt;
+            public bool Finished;
+
+            public IEnumerator Run(MethodInfo method)
+            {
+                IEnumerator inner = null;
+                try
+                {
+                    try
+                    {
+                        inner = method.Invoke(null, null) as IEnumerator;
+                    }
+                    catch (Exception e)
+                    {
+                        Fail(e);
+                        yield break;
+                    }
+
+                    if (inner == null)
+                    {
+                        Fail(new InvalidOperationException(
+                            "Coroutine mode requires the code to yield — e.g. 'yield return null;' or 'yield return new WaitForSeconds(1);'."));
+                        yield break;
+                    }
+
+                    McpLog.Info($"[ExecuteCode] coroutine started: {method.DeclaringType?.Assembly.GetName().Name}");
+                    int steps = 0;
+                    while (true)
+                    {
+                        bool moved;
+                        try
+                        {
+                            moved = inner.MoveNext();
+                        }
+                        catch (Exception e)
+                        {
+                            Fail(e);
+                            yield break;
+                        }
+                        if (!moved)
+                            break;
+                        // yield sits outside any catch block (C# forbids yielding inside a
+                        // try-with-catch); Unity's pump interprets the forwarded instruction.
+                        yield return inner.Current;
+                        steps++;
+                        if (steps % 10 == 0)
+                            McpLog.Info($"[ExecuteCode] coroutine step {steps}");
+                    }
+                    McpLog.Info($"[ExecuteCode] coroutine finished after {steps} steps");
+
+                    var result = _coroutineResult;
+                    if (result != null)
+                        Tcs.TrySetResult(new SuccessResponse("Coroutine completed.",
+                            new { result = SerializeResult(result), compiler = Compiler }));
+                    else
+                        Tcs.TrySetResult(new SuccessResponse("Coroutine completed.", new { compiler = Compiler }));
+                }
+                finally
+                {
+                    // A C# iterator's finally runs on Dispose or natural end, never on a caught
+                    // throw — so user cleanup (their finally blocks) only runs if we dispose the
+                    // enumerator ourselves on every exit path.
+                    try { if (inner is IDisposable disposable) disposable.Dispose(); } catch { }
+                    lock (_coroutineLock)
+                    {
+                        if (ReferenceEquals(_coroutineHost, this))
+                            _coroutineHost = null;
+                    }
+                    Finished = true;
+                }
+            }
+
+            private void Fail(Exception e)
+            {
+                var innerEx = (e is TargetInvocationException tie) ? (tie.InnerException ?? e) : e;
+                Tcs.TrySetResult(new ErrorResponse($"Coroutine error: {innerEx.Message}",
+                    new { exceptionType = innerEx.GetType().Name, stackTrace = innerEx.StackTrace, compiler = Compiler }));
+            }
+
+            private void Update()
+            {
+                if (Finished)
+                    return;
+                if (TimeoutSeconds > 0 && EditorApplication.timeSinceStartup - StartedAt > TimeoutSeconds)
+                {
+                    Tcs.TrySetResult(new ErrorResponse(
+                        $"Coroutine timed out after {TimeoutSeconds}s. The coroutine was stopped; any work it had queued is abandoned."));
+                    StopAllCoroutines();
+                    Destroy(gameObject);
+                }
+            }
         }
 
         private static string[] GetAssemblyPaths()
@@ -415,7 +914,7 @@ namespace MCPForUnity.Editor.Tools
             return null;
         }
 
-        private static void AddToHistory(string code, object result, double elapsedMs, bool safetyChecks, string compiler = "auto")
+        private static void AddToHistory(string code, object result, double elapsedMs, bool safetyChecks, string compiler = "auto", string executionMode = "sync")
         {
             string preview;
             if (result is SuccessResponse sr)
@@ -437,6 +936,7 @@ namespace MCPForUnity.Editor.Tools
                 timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"),
                 safetyChecksEnabled = safetyChecks,
                 compiler = compiler,
+                executionMode = executionMode,
             });
 
             while (_history.Count > MaxHistoryEntries)
@@ -470,6 +970,7 @@ namespace MCPForUnity.Editor.Tools
             public string timestamp;
             public bool safetyChecksEnabled;
             public string compiler;
+            public string executionMode;
         }
     }
 

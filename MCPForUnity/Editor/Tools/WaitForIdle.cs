@@ -51,7 +51,11 @@ namespace MCPForUnity.Editor.Tools
         private static object Deserialize(string json)
         {
             try { return JObject.Parse(json); }
-            catch { return new ErrorResponse("Failed to parse wait result."); }
+            catch (Exception e)
+            {
+                McpLog.Warn($"[WaitForIdle] Failed to parse wait result: {e.Message}; json='{(json ?? "<null>")}'. Length={json?.Length}");
+                return new ErrorResponse("Failed to parse wait result.");
+            }
         }
     }
 }

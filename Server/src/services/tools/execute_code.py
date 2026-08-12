@@ -64,6 +64,29 @@ async def execute_code(
         "'auto' uses Roslyn if Microsoft.CodeAnalysis is installed, else falls back to CodeDom. "
         "'roslyn' forces Roslyn (C# 12+). 'codedom' forces legacy CSharpCodeProvider (C# 6). Default: auto.",
     ] = "auto",
+    execution_mode: Annotated[
+        Literal["sync", "coroutine"],
+        "Execution mode for 'execute' action. "
+        "'sync' runs the body to completion and returns (default). "
+        "'coroutine' runs the body as an IEnumerator on Unity's coroutine pump, so it may "
+        "yield return (WaitForSeconds, null, AsyncOperation...); use "
+        "MCPForUnity.Editor.Tools.ExecuteCode.SetCoroutineResult(value) to return a value. "
+        "Default: sync.",
+    ] = "sync",
+    capture_logs: Annotated[
+        bool,
+        "Capture editor log messages produced during execution and attach them to the "
+        "response as data.logs (each with message/type/timestamp). Default: true.",
+    ] = True,
+    log_limit: Annotated[
+        int,
+        "Maximum log entries to attach (1-200). Default: 200.",
+    ] = 200,
+    timeout_s: Annotated[
+        int,
+        "Maximum seconds for coroutine mode before it is stopped and reported as timed out "
+        "(1-600). Ignored in sync mode. Default: 60.",
+    ] = 60,
 ) -> dict[str, Any]:
     unity_instance = await get_unity_instance_from_context(ctx)
 
@@ -75,6 +98,10 @@ async def execute_code(
         params_dict["code"] = code
         params_dict["safety_checks"] = safety_checks
         params_dict["compiler"] = compiler
+        params_dict["execution_mode"] = execution_mode
+        params_dict["capture_logs"] = capture_logs
+        params_dict["log_limit"] = max(1, min(log_limit, 200))
+        params_dict["timeout_s"] = max(1, min(timeout_s, 600))
     elif action == "replay":
         if index is None:
             return {"success": False, "message": "Parameter 'index' is required for 'replay' action."}

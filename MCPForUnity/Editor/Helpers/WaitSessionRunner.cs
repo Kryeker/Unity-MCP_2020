@@ -127,12 +127,15 @@ namespace MCPForUnity.Editor.Helpers
             string atKey = SessionKeyResultAtPrefix + token;
             string at = SessionState.GetString(atKey, null);
             string json = SessionState.GetString(SessionKeyResultPrefix + token, null);
-            if (json == null)
+            // Unity's SessionState.GetString(key, null) returns "" (not null) for missing
+            // keys — treat empty as missing.
+            if (string.IsNullOrEmpty(json))
                 return false;
 
             // Expire stale results so SessionState does not grow unbounded.
             double now = EditorApplication.timeSinceStartup;
-            if (double.TryParse(at, out double storedAt) && now - storedAt > ResultRetentionSeconds)
+            if (!string.IsNullOrEmpty(at) && double.TryParse(at, out double storedAt)
+                && now - storedAt > ResultRetentionSeconds)
             {
                 SessionState.EraseString(SessionKeyResultPrefix + token);
                 SessionState.EraseString(atKey);
@@ -176,7 +179,39 @@ namespace MCPForUnity.Editor.Helpers
             if (tcs != null)
                 AttachListener(session.Token, tcs);
             Save();
+
+            // Wall-clock watchdog on the thread pool: the update tick (and with it the
+            // deadline check) stalls when the editor window is unfocused, so a session could
+            // otherwise hang the client forever. The watchdog only notifies listeners — the
+            // main-thread tick performs the real cleanup when the editor wakes up.
+            if (session.Deadline > 0)
+            {
+                double secondsLeft = session.Deadline - EditorApplication.timeSinceStartup;
+                if (secondsLeft > 0)
+                {
+                    Task.Delay(TimeSpan.FromSeconds(secondsLeft))
+                        .ContinueWith(t => FireWallTimeout(session), TaskScheduler.Default);
+                }
+            }
             return session;
+        }
+
+        private static void FireWallTimeout(WaitSession session)
+        {
+            if (session.Completed)
+                return;
+            // Do not touch session state here (the session list is main-thread only); just
+            // deliver a timeout to whoever is waiting. The tick completes the cleanup.
+            if (_listeners.TryGetValue(session.Token, out var list))
+            {
+                var json = JsonConvert.SerializeObject(new ErrorResponse(
+                    $"Timed out waiting (wall clock) after {Math.Max(0, session.Deadline - EditorApplication.timeSinceStartup):F0}s for the editor."));
+                foreach (var tcs in list)
+                {
+                    try { tcs.TrySetResult(json); }
+                    catch { /* listener already completed */ }
+                }
+            }
         }
 
         /// <summary>Whether any session is currently in flight (diagnostics).</summary>
