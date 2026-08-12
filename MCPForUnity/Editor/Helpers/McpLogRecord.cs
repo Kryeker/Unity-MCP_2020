@@ -35,6 +35,10 @@ namespace MCPForUnity.Editor.Helpers
             }
         }
 
+        internal static string LogDirectory => LogDir;
+        internal static string LogFilePath => LogPath;
+        internal static string ErrorLogFilePath => ErrorLogPath;
+
         internal static void Log(string commandType, JObject parameters, string type, string status, long durationMs, string error = null)
         {
             if (!IsEnabled) return;

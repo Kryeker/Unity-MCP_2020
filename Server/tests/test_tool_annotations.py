@@ -36,6 +36,7 @@ READ_ONLY = {
     "get_sha",
     "get_test_job",
     "manage_script_capabilities",
+    "query_audit_log",
     "unity_docs",
     "unity_reflect",
     "unity_refs",
@@ -63,6 +64,8 @@ NON_DESTRUCTIVE = {
     "unity_index",
     # Simulates input during PlayMode; changes no project asset (session interaction only).
     "manage_input",
+    # Reads/writes the audit-log recording switch (EditorPrefs only, no project assets).
+    "manage_audit",
     # Reads/writes session confirmation settings (EditorPrefs only, no project assets).
     "manage_permissions",
     # Rollback restores files to a captured snapshot (recoverable, user-requested undo).
