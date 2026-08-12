@@ -15,7 +15,7 @@ using UnityEngine;
 
 namespace MCPForUnity.Editor.Tools
 {
-    [McpForUnityTool("manage_packages", AutoRegister = false, Group = "core", RequiresPolling = true, PollAction = "status")]
+    [McpForUnityTool("manage_packages", AutoRegister = false, Group = "core", RequiresPolling = true, PollAction = "status", ConfirmationLevel = ConfirmationLevel.Confirm, ConfirmationAction = "remove")]
     public static class ManagePackages
     {
         // Pending async requests keyed by job ID

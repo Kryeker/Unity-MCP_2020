@@ -69,6 +69,20 @@ namespace MCPForUnity.Editor.Tools
         }
 
         /// <summary>
+        /// Confirmation level: whether commands to this tool require an in-editor user
+        /// confirmation dialog before executing (see PermissionGate).
+        /// None = never confirm; Confirm = confirm (skippable via settings);
+        /// Always = always confirm, cannot be disabled.
+        /// </summary>
+        public ConfirmationLevel ConfirmationLevel { get; set; } = ConfirmationLevel.None;
+
+        /// <summary>
+        /// Optional action filter: when set, confirmation applies only to invocations whose
+        /// "action" parameter equals this value (e.g. "delete"). Ignored when empty.
+        /// </summary>
+        public string ConfirmationAction { get; set; }
+
+        /// <summary>
         /// Create an MCP tool attribute with auto-generated command name.
         /// The command name will be derived from the class name (PascalCase → snake_case).
         /// Example: ManageAsset → manage_asset
@@ -86,6 +100,19 @@ namespace MCPForUnity.Editor.Tools
         {
             Name = name;
         }
+    }
+
+    /// <summary>
+    /// Confirmation tiers for in-editor user approval of MCP commands.
+    /// </summary>
+    public enum ConfirmationLevel
+    {
+        /// <summary>No confirmation required.</summary>
+        None = 0,
+        /// <summary>Confirm before executing; can be disabled via the permission settings.</summary>
+        Confirm = 1,
+        /// <summary>Always confirm; cannot be disabled (e.g. arbitrary code execution).</summary>
+        Always = 2,
     }
 
     /// <summary>

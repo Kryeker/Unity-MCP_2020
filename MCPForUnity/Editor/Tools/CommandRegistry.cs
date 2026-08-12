@@ -19,14 +19,19 @@ namespace MCPForUnity.Editor.Tools
         public string CommandName { get; }
         public Func<JObject, object> SyncHandler { get; }
         public Func<JObject, Task<object>> AsyncHandler { get; }
+        public ConfirmationLevel ConfirmationLevel { get; }
+        public string ConfirmationAction { get; }
 
         public bool IsAsync => AsyncHandler != null;
 
-        public HandlerInfo(string commandName, Func<JObject, object> syncHandler, Func<JObject, Task<object>> asyncHandler)
+        public HandlerInfo(string commandName, Func<JObject, object> syncHandler, Func<JObject, Task<object>> asyncHandler,
+            ConfirmationLevel confirmationLevel = ConfirmationLevel.None, string confirmationAction = null)
         {
             CommandName = commandName;
             SyncHandler = syncHandler;
             AsyncHandler = asyncHandler;
+            ConfirmationLevel = confirmationLevel;
+            ConfirmationAction = confirmationAction;
         }
     }
 
@@ -171,6 +176,7 @@ namespace MCPForUnity.Editor.Tools
         {
             string commandName;
             string typeLabel = isResource ? "resource" : "tool";
+            McpForUnityToolAttribute toolAttr = null;
 
             // Get command name from appropriate attribute
             if (isResource)
@@ -180,7 +186,7 @@ namespace MCPForUnity.Editor.Tools
             }
             else
             {
-                var toolAttr = type.GetCustomAttribute<McpForUnityToolAttribute>();
+                toolAttr = type.GetCustomAttribute<McpForUnityToolAttribute>();
                 commandName = toolAttr.CommandName;
             }
 
@@ -224,7 +230,8 @@ namespace MCPForUnity.Editor.Tools
                 if (typeof(Task).IsAssignableFrom(method.ReturnType))
                 {
                     var asyncHandler = CreateAsyncHandlerDelegate(method, commandName);
-                    handlerInfo = new HandlerInfo(commandName, null, asyncHandler);
+                    handlerInfo = new HandlerInfo(commandName, null, asyncHandler,
+                        toolAttr.ConfirmationLevel, toolAttr.ConfirmationAction);
                 }
                 else
                 {
@@ -232,7 +239,8 @@ namespace MCPForUnity.Editor.Tools
                         typeof(Func<JObject, object>),
                         method
                     );
-                    handlerInfo = new HandlerInfo(commandName, handler, null);
+                    handlerInfo = new HandlerInfo(commandName, handler, null,
+                        toolAttr.ConfirmationLevel, toolAttr.ConfirmationAction);
                 }
 
                 _handlers[commandName] = handlerInfo;
@@ -291,6 +299,16 @@ namespace MCPForUnity.Editor.Tools
         {
             var handlerInfo = GetHandlerInfo(commandName);
 
+            // Confirmation gate: dangerous commands (ConfirmationLevel) first ask the user in
+            // the editor; rejection or timeout produces an error response and nothing runs.
+            string action = @params?["action"]?.ToString();
+            if (PermissionGate.NeedsConfirmation(
+                handlerInfo.ConfirmationLevel, handlerInfo.ConfirmationAction, action))
+            {
+                RunWithConfirmation(handlerInfo, @params, commandName, tcs);
+                return null; // async path: the TCS completes when the user answers
+            }
+
             if (handlerInfo.IsAsync)
             {
                 ExecuteAsyncHandler(handlerInfo, @params, commandName, tcs);
@@ -303,6 +321,83 @@ namespace MCPForUnity.Editor.Tools
             }
 
             return handlerInfo.SyncHandler(@params);
+        }
+
+        /// <summary>
+        /// Runs the confirmation dialog, then executes the command (sync or async) once the
+        /// user approves. Rejection or timeout completes the TCS with an error response.
+        /// </summary>
+        private static async void RunWithConfirmation(
+            HandlerInfo handlerInfo, JObject @params, string commandName, TaskCompletionSource<string> tcs)
+        {
+            bool approved;
+            try
+            {
+                approved = await PermissionGate.RequestConfirmation(
+                    $"MCP Command Approval",
+                    $"The MCP client requested command '{commandName}'.",
+                    DescribeInvocation(handlerInfo, @params),
+                    always: handlerInfo.ConfirmationLevel == ConfirmationLevel.Always);
+            }
+            catch (Exception ex)
+            {
+                ReportAsyncFailure(commandName, tcs, ex);
+                return;
+            }
+
+            if (!approved)
+            {
+                try
+                {
+                    // Wrapped like the sync path: the client unwraps {status, result} and
+                    // reads success/error from the inner response.
+                    tcs.TrySetResult(JsonConvert.SerializeObject(new
+                    {
+                        status = "success",
+                        result = new ErrorResponse($"Command '{commandName}' was rejected: no user approval."),
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    ReportAsyncFailure(commandName, tcs, ex);
+                }
+                return;
+            }
+
+            if (handlerInfo.IsAsync)
+            {
+                ExecuteAsyncHandler(handlerInfo, @params, commandName, tcs);
+            }
+            else
+            {
+                try
+                {
+                    tcs.TrySetResult(JsonConvert.SerializeObject(new
+                    {
+                        status = "success",
+                        result = handlerInfo.SyncHandler(@params),
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    ReportAsyncFailure(commandName, tcs, ex);
+                }
+            }
+        }
+
+        private static string DescribeInvocation(HandlerInfo handlerInfo, JObject @params)
+        {
+            if (@params == null)
+                return handlerInfo.CommandName;
+            string action = @params["action"]?.ToString();
+            string path = @params["path"]?.ToString() ?? @params["name"]?.ToString();
+            var sb = new System.Text.StringBuilder($"Command: {handlerInfo.CommandName}");
+            if (!string.IsNullOrEmpty(action))
+                sb.Append($"\nAction: {action}");
+            if (!string.IsNullOrEmpty(path))
+                sb.Append($"\nTarget: {path}");
+            sb.Append("\n\nApprove to execute, or reject. Unanswered dialogs auto-reject.");
+            return sb.ToString();
         }
 
         /// <summary>

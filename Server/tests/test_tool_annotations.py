@@ -63,6 +63,8 @@ NON_DESTRUCTIVE = {
     "unity_index",
     # Simulates input during PlayMode; changes no project asset (session interaction only).
     "manage_input",
+    # Reads/writes session confirmation settings (EditorPrefs only, no project assets).
+    "manage_permissions",
     # Reads counters / starts a profiler session; writes no project asset.
     "manage_profiler",
     # Generate into a staging area; the import step is a separate tool.
