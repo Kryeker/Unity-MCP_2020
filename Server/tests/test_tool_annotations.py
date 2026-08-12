@@ -61,6 +61,8 @@ NON_DESTRUCTIVE = {
     "wait_for_compile",
     # Writes only the external Unity Insight index under Library/UnityInsight (rebuildable).
     "unity_index",
+    # Simulates input during PlayMode; changes no project asset (session interaction only).
+    "manage_input",
     # Reads counters / starts a profiler session; writes no project asset.
     "manage_profiler",
     # Generate into a staging area; the import step is a separate tool.
