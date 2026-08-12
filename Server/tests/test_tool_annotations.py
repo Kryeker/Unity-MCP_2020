@@ -38,6 +38,10 @@ READ_ONLY = {
     "manage_script_capabilities",
     "unity_docs",
     "unity_reflect",
+    "unity_refs",
+    "unity_search",
+    "unity_ls",
+    "unity_read",
     "validate_script",
     "wait_for_idle",
 }
@@ -55,6 +59,8 @@ NON_DESTRUCTIVE = {
     "manage_tools",
     # Observes a compile session; trigger=true may request one (never destroys assets).
     "wait_for_compile",
+    # Writes only the external Unity Insight index under Library/UnityInsight (rebuildable).
+    "unity_index",
     # Reads counters / starts a profiler session; writes no project asset.
     "manage_profiler",
     # Generate into a staging area; the import step is a separate tool.
