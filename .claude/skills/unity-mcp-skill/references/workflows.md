@@ -803,6 +803,10 @@ batch_execute(fail_fast=True, commands=[
         "action": "add", "target": "MainCanvas", "component_type": "GraphicRaycaster"
     }},
     # renderMode: 0=ScreenSpaceOverlay, 1=ScreenSpaceCamera, 2=WorldSpace
+    # Note: forks with the Canvas-default fix (10.1.2+) default script-added
+    # Canvas to ScreenSpaceOverlay, so this set_property is optional there.
+    # On vanilla upstream builds a script-added Canvas defaults to WorldSpace
+    # (never renders into the Game view) -- keep the explicit renderMode=0.
     {"tool": "manage_components", "params": {
         "action": "set_property", "target": "MainCanvas",
         "component_type": "Canvas", "property": "renderMode", "value": 0
@@ -1343,6 +1347,35 @@ batch_execute(fail_fast=True, commands=[
 | **Toggle** | Toggle + children + **wire graphic** | Wire checkmark Image to `graphic`. |
 | **Input Field** | Image + TMP_InputField + children + **wire textViewport/textComponent/placeholder** | Won't function without wiring. |
 | **Layout Group** | VerticalLayoutGroup / HorizontalLayoutGroup / GridLayoutGroup | Auto-arranges children; skip manual RectTransform on children. |
+
+---
+
+### Verify UI Visually (game_view_pixels Screenshots)
+
+**After creating/editing UGUI, capture the actual Game view pixels to check the result** — this is the "build → look → compare against requirements" loop. `capture_source='game_view_pixels'` grabs what the Game view really displays (including Screen Space Overlay UGUI), unlike `game_view` (camera render, which misses overlay UI in Edit mode):
+
+```python
+# Enter Play mode first -- the Game view composites UGUI reliably there,
+# including when the editor window is unfocused/backgrounded.
+manage_editor(action="play")
+
+manage_camera(action="screenshot",
+    capture_source="game_view_pixels",
+    include_image=True,      # returns inline base64 PNG for multimodal models
+    max_resolution=960)      # longest edge of the inline image
+# → {path, fullPath, viewportWidth, viewportHeight, imageBase64, imageWidth, imageHeight}
+
+manage_editor(action="stop")
+```
+
+**Caveats (learned from live 2020.3 testing):**
+
+- **Edit mode:** the Game view composites UGUI only while the editor window is actually visible/focused (normal interactive use). When the editor is occluded or unfocused (headless automation), Edit-mode captures show the scene without UI — use Play mode for unattended verification.
+- **Play mode + unfocused editor:** the player loop pauses unless **Player Settings → Run In Background** is enabled (`runInBackground: 1`). Without it, unattended Play-mode captures show stale frames.
+- **Script-created RectTransforms default to bottom-left anchors** (Unity's Transform→RectTransform conversion), so a "centered" element may render in the corner. Either set anchors explicitly (see RectTransform Sizing above) or, when comparing, use full-frame color statistics rather than sampling one region.
+- A scene must contain at least one **Camera** for the Game view to render anything (otherwise it shows "No cameras rendering").
+
+**Compare-against-requirement loop:** capture → look at the inline image → adjust properties (`manage_components set_property`) in Edit mode → capture again → diff the two images (or compare against the requirement description). Saving to `Assets/Screenshots/` is automatic; each capture gets a unique timestamped filename.
 
 ---
 
