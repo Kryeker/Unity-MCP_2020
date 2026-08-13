@@ -114,21 +114,153 @@ namespace MCPForUnity.Editor.Helpers
             }
         }
 
-        private static void FocusAndRepaint(SceneView sceneView)
+        /// <summary>
+        /// Captures the active Game View viewport (the pixels the user sees, including UGUI
+        /// overlay rendering) to a PNG asset. Unlike camera-based capture, this includes
+        /// Screen Space Overlay UI and any on-screen overlays, in both Edit and Play mode.
+        /// </summary>
+        /// <param name="gameView">Game View window to capture.</param>
+        /// <param name="fileName">Optional file name, defaulting to a timestamped PNG.</param>
+        /// <param name="superSize">Preserved for API consistency; viewport capture always uses the displayed resolution.</param>
+        /// <param name="ensureUniqueFileName">If true, appends a suffix instead of overwriting an existing file.</param>
+        /// <param name="includeImage">If true, includes a base64 PNG in the returned result.</param>
+        /// <param name="maxResolution">Maximum edge length for the inline image payload.</param>
+        /// <param name="viewportWidth">Captured viewport width in pixels.</param>
+        /// <param name="viewportHeight">Captured viewport height in pixels.</param>
+        public static ScreenshotCaptureResult CaptureGameViewViewportToProject(
+            EditorWindow gameView,
+            string fileName,
+            int superSize,
+            bool ensureUniqueFileName,
+            bool includeImage,
+            int maxResolution,
+            out int viewportWidth,
+            out int viewportHeight,
+            string folderOverride = null)
         {
+            if (gameView == null)
+                throw new ArgumentNullException(nameof(gameView));
+
+            FocusAndRepaint(gameView);
+            // UI canvases batch during the player loop's update phase, which can lag behind
+            // script-driven creation. Force the batch rebuild + a full repaint so overlay
+            // UGUI (Screen Space Overlay canvases) is composited into the captured frame.
             try
             {
-                sceneView.Focus();
+                Canvas.ForceUpdateCanvases();
+                UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
+                Thread.Sleep(RepaintSettlingDelayMs);
             }
             catch (Exception ex)
             {
-                McpLog.Debug($"[EditorWindowScreenshotUtility] SceneView focus failed: {ex.Message}");
+                McpLog.Debug($"[EditorWindowScreenshotUtility] Canvas update failed: {ex.Message}");
+            }
+
+            Rect viewportRectPixels = GetGameViewViewportPixelRect(gameView);
+            viewportWidth = Mathf.RoundToInt(viewportRectPixels.width);
+            viewportHeight = Mathf.RoundToInt(viewportRectPixels.height);
+
+            if (viewportWidth <= 0 || viewportHeight <= 0)
+                throw new InvalidOperationException("Captured Game view viewport is empty.");
+
+            Texture2D captured = null;
+            Texture2D downscaled = null;
+            try
+            {
+                captured = CaptureViewRect(gameView, viewportRectPixels);
+
+                var result = PrepareCaptureResult(fileName, Mathf.Max(1, superSize), ensureUniqueFileName, folderOverride);
+                byte[] png = captured.EncodeToPNG();
+                File.WriteAllBytes(result.FullPath, png);
+
+                if (includeImage)
+                {
+                    int targetMax = maxResolution > 0 ? maxResolution : 640;
+                    string imageBase64;
+                    int imageWidth;
+                    int imageHeight;
+
+                    if (captured.width > targetMax || captured.height > targetMax)
+                    {
+                        downscaled = ScreenshotUtility.DownscaleTexture(captured, targetMax);
+                        imageBase64 = Convert.ToBase64String(downscaled.EncodeToPNG());
+                        imageWidth = downscaled.width;
+                        imageHeight = downscaled.height;
+                    }
+                    else
+                    {
+                        imageBase64 = Convert.ToBase64String(png);
+                        imageWidth = captured.width;
+                        imageHeight = captured.height;
+                    }
+
+                    return new ScreenshotCaptureResult(
+                        result.FullPath,
+                        result.ProjectRelativePath,
+                        result.SuperSize,
+                        false,
+                        imageBase64,
+                        imageWidth,
+                        imageHeight);
+                }
+
+                return result;
+            }
+            finally
+            {
+                DestroyTexture(captured);
+                DestroyTexture(downscaled);
+            }
+        }
+
+        /// <summary>
+        /// Returns an open Game View window, or opens one if none exists.
+        /// </summary>
+        internal static EditorWindow GetGameViewWindow()
+        {
+            var gameViewType = Type.GetType("UnityEditor.GameView,UnityEditor");
+            if (gameViewType == null)
+                return null;
+
+            try
+            {
+                foreach (var window in UnityEngine.Resources.FindObjectsOfTypeAll(gameViewType))
+                {
+                    if (window is EditorWindow editorWindow)
+                        return editorWindow;
+                }
+            }
+            catch
+            {
+                // Fall through to GetWindow below.
             }
 
             try
             {
-                sceneView.Repaint();
-                InvokeMethodIfExists(sceneView, "RepaintImmediately");
+                return EditorWindow.GetWindow(gameViewType);
+            }
+            catch (Exception ex)
+            {
+                McpLog.Debug($"[EditorWindowScreenshotUtility] Failed to open Game view: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static void FocusAndRepaint(EditorWindow window)
+        {
+            try
+            {
+                window.Focus();
+            }
+            catch (Exception ex)
+            {
+                McpLog.Debug($"[EditorWindowScreenshotUtility] Window focus failed: {ex.Message}");
+            }
+
+            try
+            {
+                window.Repaint();
+                InvokeMethodIfExists(window, "RepaintImmediately");
                 SceneView.RepaintAll();
                 UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
                 EditorApplication.QueuePlayerLoopUpdate();
@@ -136,8 +268,42 @@ namespace MCPForUnity.Editor.Helpers
             }
             catch (Exception ex)
             {
-                McpLog.Debug($"[EditorWindowScreenshotUtility] SceneView repaint failed: {ex.Message}");
+                McpLog.Debug($"[EditorWindowScreenshotUtility] Window repaint failed: {ex.Message}");
             }
+        }
+
+        private static Rect GetGameViewViewportPixelRect(EditorWindow gameView)
+        {
+            float pixelsPerPoint = EditorGUIUtility.pixelsPerPoint;
+            Rect viewportLocalPoints = GetGameViewViewportLocalRectPoints(gameView);
+            if (viewportLocalPoints.width <= 0f || viewportLocalPoints.height <= 0f)
+                throw new InvalidOperationException("Failed to resolve Game view viewport rect.");
+
+            return new Rect(
+                Mathf.Round(viewportLocalPoints.x * pixelsPerPoint),
+                Mathf.Round(viewportLocalPoints.y * pixelsPerPoint),
+                Mathf.Round(viewportLocalPoints.width * pixelsPerPoint),
+                Mathf.Round(viewportLocalPoints.height * pixelsPerPoint));
+        }
+
+        private static Rect GetGameViewViewportLocalRectPoints(EditorWindow gameView)
+        {
+            // GameView.viewInWindow (internal): the window area the rendered game view fills
+            // (window rect minus the toolbar when shown).
+            Rect? viewInWindow = GetRectProperty(gameView, "viewInWindow");
+            if (viewInWindow.HasValue && viewInWindow.Value.width > 0f && viewInWindow.Value.height > 0f)
+            {
+                return viewInWindow.Value;
+            }
+
+            // Fallback: whole window minus the toolbar strip.
+            Rect position = gameView.position;
+            const float toolbarHeight = 21f;
+            return new Rect(
+                0f,
+                toolbarHeight,
+                position.width,
+                position.height - toolbarHeight);
         }
 
         private static Rect GetSceneViewViewportPixelRect(SceneView sceneView)
@@ -177,9 +343,9 @@ namespace MCPForUnity.Editor.Helpers
                 Mathf.Min(windowRect.height, viewportHeight));
         }
 
-        private static Texture2D CaptureViewRect(SceneView sceneView, Rect viewportRectPixels)
+        private static Texture2D CaptureViewRect(EditorWindow window, Rect viewportRectPixels)
         {
-            object hostView = GetHostView(sceneView);
+            object hostView = GetHostView(window);
             if (hostView == null)
                 throw new InvalidOperationException("Failed to resolve Scene view host view.");
 

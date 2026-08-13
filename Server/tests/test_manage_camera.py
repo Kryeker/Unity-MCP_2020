@@ -589,3 +589,17 @@ def test_action_uppercase(mock_unity):
     )
     assert result["success"] is True
     assert mock_unity["params"]["action"] == "ping"
+
+
+def test_screenshot_game_view_pixels_capture_params(mock_unity):
+    result = asyncio.run(
+        manage_camera(
+            SimpleNamespace(),
+            action="screenshot",
+            capture_source="game_view_pixels",
+            include_image=True,
+        )
+    )
+    assert result["success"] is True
+    assert mock_unity["params"]["captureSource"] == "game_view_pixels"
+    assert mock_unity["params"]["includeImage"] is True

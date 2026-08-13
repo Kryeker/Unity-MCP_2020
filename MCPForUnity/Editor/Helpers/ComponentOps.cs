@@ -409,6 +409,15 @@ namespace MCPForUnity.Editor.Helpers
             {
                 light.type = LightType.Directional;
             }
+
+            // A Canvas added via script defaults to WorldSpace on 2020.x (the C++ default),
+            // which never renders into the Game view -- unlike the editor menu (GameObject > UI)
+            // which creates Screen Space - Overlay. Agents creating UGUI expect a usable overlay
+            // canvas; callers can still pass renderMode in properties to override.
+            if (component is Canvas canvas && canvas.renderMode == RenderMode.WorldSpace)
+            {
+                canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            }
         }
 
         private static bool AllowsMultiple(GameObject target, Type componentType)

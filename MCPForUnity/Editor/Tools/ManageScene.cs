@@ -530,10 +530,35 @@ namespace MCPForUnity.Editor.Tools
                     ? "game_view"
                     : cmd.captureSource.Trim().ToLowerInvariant();
 
-                if (captureSource != "game_view" && captureSource != "scene_view")
+                if (captureSource != "game_view" && captureSource != "game_view_pixels" && captureSource != "scene_view")
                 {
                     return new ErrorResponse(
-                        $"Invalid capture_source '{cmd.captureSource}'. Valid values: 'game_view', 'scene_view'.");
+                        $"Invalid capture_source '{cmd.captureSource}'. Valid values: 'game_view', 'game_view_pixels', 'scene_view'.");
+                }
+
+                if (captureSource == "game_view_pixels")
+                {
+                    if (resolvedSuperSize > 1)
+                    {
+                        return new ErrorResponse(
+                            "capture_source='game_view_pixels' does not support super_size above 1. Remove 'super_size' or use capture_source='game_view'.");
+                    }
+                    if (!string.IsNullOrEmpty(cmd.batch))
+                    {
+                        return new ErrorResponse(
+                            "capture_source='game_view_pixels' does not support batch modes. Use capture_source='game_view' for batch capture.");
+                    }
+                    if (cmd.viewPosition.HasValue || cmd.viewRotation.HasValue)
+                    {
+                        return new ErrorResponse(
+                            "capture_source='game_view_pixels' does not support view_position/view_rotation. Use capture_source='game_view' for positioned capture.");
+                    }
+                    if (!string.IsNullOrEmpty(cameraRef))
+                    {
+                        return new ErrorResponse(
+                            "capture_source='game_view_pixels' does not support camera selection. Remove 'camera' or use capture_source='game_view'.");
+                    }
+                    return CaptureGameViewPixelsScreenshot(cmd, fileName, includeImage, maxResolution);
                 }
 
                 if (captureSource == "scene_view")
@@ -848,6 +873,87 @@ namespace MCPForUnity.Editor.Tools
             catch (Exception e)
             {
                 return new ErrorResponse($"Error capturing Scene View screenshot: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Captures the Game View viewport pixels (what the user sees, including UGUI overlay UI)
+        /// to a PNG asset. Works in Edit and Play mode; requires a visible Game View window.
+        /// </summary>
+        private static object CaptureGameViewPixelsScreenshot(
+            SceneCommand cmd,
+            string fileName,
+            bool includeImage,
+            int maxResolution)
+        {
+            if (Application.isBatchMode)
+            {
+                return new ErrorResponse("capture_source='game_view_pixels' is not supported in batch mode.");
+            }
+
+            EnsureGameView();
+
+            EditorWindow gameView = EditorWindowScreenshotUtility.GetGameViewWindow();
+            if (gameView == null)
+            {
+                return new ErrorResponse(
+                    "Could not open the Game view window. Open Window > General > Game and retry.");
+            }
+
+            try
+            {
+                string gameViewFolderOverride = ScreenshotPreferences.Resolve(cmd.outputFolder);
+                int viewportWidth;
+                int viewportHeight;
+                ScreenshotCaptureResult result;
+                try
+                {
+                    result = EditorWindowScreenshotUtility.CaptureGameViewViewportToProject(
+                        gameView,
+                        fileName,
+                        superSize: 1,
+                        ensureUniqueFileName: true,
+                        includeImage: includeImage,
+                        maxResolution: maxResolution,
+                        out viewportWidth,
+                        out viewportHeight,
+                        folderOverride: gameViewFolderOverride);
+                }
+                catch (InvalidOperationException ex) when (ex.Message.StartsWith("Screenshot folder", StringComparison.Ordinal))
+                {
+                    return new ErrorResponse(ex.Message);
+                }
+
+                if (ScreenshotUtility.IsUnderAssets(result.ProjectRelativePath))
+                    AssetDatabase.ImportAsset(result.ProjectRelativePath, ImportAssetOptions.ForceSynchronousImport);
+
+                var data = new Dictionary<string, object>
+                {
+                    { "path", result.ProjectRelativePath },
+                    { "fullPath", result.FullPath },
+                    { "superSize", result.SuperSize },
+                    { "isAsync", false },
+                    { "camera", "GameView" },
+                    { "captureSource", "game_view_pixels" },
+                    { "captureMode", "game_view_viewport" },
+                    { "viewportWidth", viewportWidth },
+                    { "viewportHeight", viewportHeight },
+                };
+
+                if (includeImage && result.ImageBase64 != null)
+                {
+                    data["imageBase64"] = result.ImageBase64;
+                    data["imageWidth"] = result.ImageWidth;
+                    data["imageHeight"] = result.ImageHeight;
+                }
+
+                return new SuccessResponse(
+                    $"Game view screenshot captured to '{result.ProjectRelativePath}' ({viewportWidth}x{viewportHeight}).",
+                    data);
+            }
+            catch (Exception e)
+            {
+                return new ErrorResponse($"Error capturing Game view screenshot: {e.Message}");
             }
         }
 
