@@ -191,6 +191,17 @@ Exit codes: `0` pass, `1` blocking-leg regression, `2` bridge unreachable / setu
 4. Add Python tests in `Server/tests/test_manage_<domain>.py`
 5. Add Unity tests in `TestProjects/UnityMCPTests/Assets/Tests/`
 
+## Collaboration & Git Workflow (this fork)
+
+- Main dev branch: `feat/wait-for-idle` (repo default). **Never push work to `beta`/`main`** (upstream baseline mirrors).
+- Before every push: `git pull --rebase origin feat/wait-for-idle` — keep linear history and avoid stale-branch rejections.
+- Commit messages must state the motivation (follow the existing commit style).
+- Do **not** commit local-instance edits under `TestProjects/Unity2020Compat/Packages/manifest.json` / `packages-lock.json` — those are per-machine user changes.
+- Before pushing, all Python tests must pass: `cd Server && uv run --extra dev pytest tests/ -q`.
+- C# changes must compile on Unity 2020.3.24f1 (isolated verify project, `UNITY_EXIT=0`).
+- New MCP tool: explicit `annotations=ToolAnnotations(title=..., destructiveHint=...)` + register in `Server/tests/test_tool_annotations.py`; new C# files need hand-written `.meta`.
+- Full background/status for collaborators: `docs/DEVELOPMENT.md`.
+
 ## What Not To Do
 
 - Don't add features without tests
