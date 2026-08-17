@@ -231,7 +231,7 @@ namespace MCPForUnity.Editor.Tools
                 {
                     var asyncHandler = CreateAsyncHandlerDelegate(method, commandName);
                     handlerInfo = new HandlerInfo(commandName, null, asyncHandler,
-                        toolAttr.ConfirmationLevel, toolAttr.ConfirmationAction);
+                        toolAttr?.ConfirmationLevel ?? ConfirmationLevel.None, toolAttr?.ConfirmationAction);
                 }
                 else
                 {
@@ -240,7 +240,7 @@ namespace MCPForUnity.Editor.Tools
                         method
                     );
                     handlerInfo = new HandlerInfo(commandName, handler, null,
-                        toolAttr.ConfirmationLevel, toolAttr.ConfirmationAction);
+                        toolAttr?.ConfirmationLevel ?? ConfirmationLevel.None, toolAttr?.ConfirmationAction);
                 }
 
                 _handlers[commandName] = handlerInfo;
