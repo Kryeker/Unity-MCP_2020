@@ -111,6 +111,13 @@ dsh --profile web --dump-config | findstr mcp-unity
 - 现象：Server 正常但 `/api/instances` 返回 `[]`。
 - 处理：在 Unity MCP 窗口点一次 **Connect**，桥才向 Server 注册会话。
 
+### 6.4 多工程切换时实例路由（set_active_instance）
+
+- 现象：从工程 A（如 Unity2020Compat）切到工程 B（如 Anatomy）后，工具调用报 `Unity session not available / no_unity_session`，但 `/api/instances` 里 B 已注册。
+- 根因：DSH 会话记住了旧的 active instance（A），A 关闭后 server 仍等它的 session，不自动切到 B。
+- 处理：调用 `mcp__unity__set_active_instance`，参数 `instance` 填 `工程名@hash`（如 `Anatomy@d28d03812f7b9dc1`），从 `/api/instances` 或 `mcpforunity://instances` 资源取。
+- 实战：Anatomy（`E:\UnityProject2025\Anatomy`）接入成功——manifest 加 `"com.coplaydev.unity-mcp": "file:../../Unity-shikiMCP/MCPForUnity"`，Unity 重开 + Connect + set_active_instance 三步后，DSH 读到真实场景（如 ACUMER_Textures）。
+
 ## 七、协作约定（衔接 DEVELOPMENT.md）
 
 - 所有开发在 `feat/wait-for-idle` 分支；改动经 `git pull --rebase` 后推送。
