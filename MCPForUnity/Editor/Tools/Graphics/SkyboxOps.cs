@@ -15,7 +15,7 @@ namespace MCPForUnity.Editor.Tools.Graphics
         {
             get =>
 #if UNITY_2022_1_OR_NEWER
-                RenderSettings.customReflectionTexture;
+                RenderSettings.customReflectionTexture as Cubemap;
 #else
                 RenderSettings.customReflection;
 #endif
