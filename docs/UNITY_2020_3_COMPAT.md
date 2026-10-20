@@ -56,7 +56,7 @@
 | `AddAndRemoveRequest` | `Client.Add`/`Client.Remove` 逐个 | MCPForUnityEditorWindow |
 | `ShaderPropertyType.Int` | 2020.3 枚举无 Int（用 Float/Range 分支覆盖） | SkyboxOps |
 | `ProfilerCategory.FileIO/VirtualTexturing` | 映射 Loading/Render | CounterOps |
-| `LightingSettings.lightmapCompression` | 2020.3 无此属性 → 读字段省略、写字段返回成功但跳过（**真实缺失**） | LightBakingOps |
+| `LightingSettings.lightmapCompression` | 2020.3 无此属性 → 读字段省略、写字段返回失败（进入 `failed` 列表，**真实缺失**） | LightBakingOps |
 | `MaterialPropertyBlock.HasColor` | try/catch GetColor | ManagePrefabs |
 
 ## 四、UI Toolkit 差异（DropdownField 是 2021.2+ 控件）
@@ -74,7 +74,7 @@
 | 功能 | 2020.3 状态 | 处理 |
 |---|---|---|
 | `UIDocument` runtime UI 组件（attach_ui_document / detach_ui_document / get_visual_tree / render_ui / modify_visual_element / create_panel_settings / update_panel_settings） | 2021.2+ 才有 | 返回明确错误信息 "requires Unity 2021.2 or newer"，工具列表仍注册 |
-| `LightingSettings.lightmapCompression` | 2021.2+ 才有 | 读取省略该字段，写入静默跳过 |
+| `LightingSettings.lightmapCompression` | 2021.2+ 才有 | 读取省略该字段，写入返回失败（`failed` 列表如实报告，不再静默成功） |
 | `BuildOptions.CleanBuildCache` | 2021.2+ 才有 | clean_build 参数被忽略 |
 | Standalone Server 子目标构建 | 2021.2+ 才有 | subtarget 固定为 Player(0) |
 | `ProfilerCategory.FileIO` / `VirtualTexturing` | 2021.2+ 才有 | 映射到相近分类 |
