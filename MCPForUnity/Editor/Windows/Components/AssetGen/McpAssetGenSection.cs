@@ -60,11 +60,11 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
 
         // Per-provider enable toggles for the GLB-capable (model) providers, used to
         // recompute the glTFast notice when a toggle changes.
-        private readonly List<(string Id, Toggle Toggle)> modelEnableToggles = new();
-        private readonly List<(VisualElement Container, string Kind, string Provider)> modelControls = new();
-        private readonly Dictionary<string, string> searches = new();
+        private readonly List<(string Id, Toggle Toggle)> modelEnableToggles = new List<(string Id, Toggle Toggle)>();
+        private readonly List<(VisualElement Container, string Kind, string Provider)> modelControls = new List<(VisualElement Container, string Kind, string Provider)>();
+        private readonly Dictionary<string, string> searches = new Dictionary<string, string>();
         // Last failed compatibility check per kind/provider, kept so a catalog rebuild cannot hide it.
-        private readonly Dictionary<string, (string Id, string Error)> verifyErrors = new();
+        private readonly Dictionary<string, (string Id, string Error)> verifyErrors = new Dictionary<string, (string Id, string Error)>();
 
         public VisualElement Root { get; private set; }
 
@@ -498,8 +498,14 @@ namespace MCPForUnity.Editor.Windows.Components.AssetGen
             modelLabel.AddToClassList("setting-label");
             dropdownRow.Add(modelLabel);
 
+#if UNITY_2021_2_OR_NEWER
             // The list-item callback goes through the ctor: the property is not public before Unity 6.
             var dropdown = new DropdownField(choices, 0, null, MenuItemText);
+#else
+            // Unity 2020.3: CompatDropdownField self-draws via IMGUI popup (flat list,
+            // no submenu splitting), so the MenuItemText slash workaround is not needed.
+            var dropdown = new CompatDropdownField(choices, 0);
+#endif
             dropdown.AddToClassList("setting-dropdown-inline");
             dropdown.tooltip = "The model generate_* uses for this provider when no explicit model is passed.";
             dropdown.SetValueWithoutNotify(choices[selectedIndex]);

@@ -28,12 +28,12 @@ namespace MCPForUnity.Editor.Services.AssetGen
         // (~860 bytes per model), so this leaves ~25x headroom before reloads stop using the cache.
         internal const long MaxCacheBytes = 16 * 1024 * 1024;
         private static readonly TimeSpan Lifetime = TimeSpan.FromHours(24);
-        private static readonly Dictionary<string, Snapshot> Snapshots = new();
-        private static readonly Dictionary<string, Task<bool>> Refreshes = new();
-        private static readonly Dictionary<string, string> Errors = new();
-        private static readonly Dictionary<string, DateTime> Attempts = new();
+        private static readonly Dictionary<string, Snapshot> Snapshots = new Dictionary<string, Snapshot>();
+        private static readonly Dictionary<string, Task<bool>> Refreshes = new Dictionary<string, Task<bool>>();
+        private static readonly Dictionary<string, string> Errors = new Dictionary<string, string>();
+        private static readonly Dictionary<string, DateTime> Attempts = new Dictionary<string, DateTime>();
         private static bool loaded;
-        private static readonly SemaphoreSlim RequestGate = new(1, 1);
+        private static readonly SemaphoreSlim RequestGate = new SemaphoreSlim(1, 1);
         private static DateTime nextRequestAt;
         public static event Action<string> Changed;
 

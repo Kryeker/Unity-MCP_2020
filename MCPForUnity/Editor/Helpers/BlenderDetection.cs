@@ -209,7 +209,7 @@ namespace MCPForUnity.Editor.Helpers
         internal static Version ParseVersion(string name)
         {
             if (string.IsNullOrEmpty(name)) return null;
-            return Version.TryParse(name.Contains('.') ? name : name + ".0", out Version v) ? v : null;
+            return Version.TryParse(name.Contains(".") ? name : name + ".0", out Version v) ? v : null;
         }
     }
 }

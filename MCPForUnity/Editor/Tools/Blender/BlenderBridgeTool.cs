@@ -560,7 +560,7 @@ print(json.dumps({'path': out, 'bytes': os.path.getsize(out), 'selection_only': 
         {
             string message = bloom?["message"]?.ToString() ?? "Bloom configured.";
             bool failed = bloom != null && bloom.Value<bool?>("success") == false;
-            return failed ? new ErrorResponse(message) : new SuccessResponse(message, bloom);
+            return failed ? (IMcpResponse)new ErrorResponse(message) : new SuccessResponse(message, bloom);
         }
 
         // -------------------------------------------------------- compare_screenshot
@@ -710,7 +710,7 @@ print(json.dumps({'path': out, 'bytes': os.path.getsize(out), 'selection_only': 
                 if (!fetched) entry["fetch_error"] = Truncate(fetchErr, 300);
 
                 string branch = "main";
-                if (TryGit(fork, $"symbolic-ref --short refs/remotes/{remote}/HEAD", out string sym, out _) && sym.Trim().Contains('/'))
+                if (TryGit(fork, $"symbolic-ref --short refs/remotes/{remote}/HEAD", out string sym, out _) && sym.Trim().Contains("/"))
                     branch = sym.Trim().Substring(sym.Trim().IndexOf('/') + 1);
                 else if (!TryGit(fork, $"rev-parse --verify --quiet refs/remotes/{remote}/main", out _, out _)
                          && TryGit(fork, $"rev-parse --verify --quiet refs/remotes/{remote}/master", out _, out _))
