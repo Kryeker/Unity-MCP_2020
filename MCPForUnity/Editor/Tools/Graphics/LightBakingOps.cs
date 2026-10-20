@@ -525,7 +525,9 @@ namespace MCPForUnity.Editor.Tools.Graphics
                         return false;
                     return true;
 #else
-                    return true;
+                    // Unity 2020.3 has no LightingSettings.lightmapCompression API:
+                    // report failure instead of silently claiming success.
+                    return false;
 #endif
 
                 case "ao":

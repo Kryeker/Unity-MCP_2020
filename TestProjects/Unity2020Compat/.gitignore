@@ -15,4 +15,5 @@
 *.userprefs
 .vs/
 .idea/
-TestProjects/Unity2020Compat/compile_check.log
+# Local compile verification output (untracked)
+compile_check.log

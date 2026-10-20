@@ -516,12 +516,7 @@ namespace MCPForUnity.Editor.Tools
         }
 #endif
 
-#if !UNITY_2021_2_OR_NEWER
-        private static object CreateDefaultPanelSettings(string path)
-        {
-            return null;
-        }
-#else
+#if UNITY_2021_2_OR_NEWER
         private static PanelSettings CreateDefaultPanelSettings(string path)
         {
             string dir = Path.GetDirectoryName(path);
