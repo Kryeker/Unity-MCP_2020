@@ -412,13 +412,9 @@ namespace MCPForUnity.Editor.Tools
                     // (Calibration removed)
 
                     // --- Filtering ---
-                    // Prefer classifying severity from message/stacktrace; fallback to mode bits if needed
-                    LogType unityType = InferTypeFromMessage(message);
-                    bool isExplicitDebug = IsExplicitDebugLog(message);
-                    if (!isExplicitDebug && unityType == LogType.Log)
-                    {
-                        unityType = GetLogTypeFromMode(mode);
-                    }
+                    // The mode bits carry Unity's own type. The message text does not: with Full
+                    // stack traces its frames contain words like "Exception" for any log (#1433).
+                    LogType unityType = GetLogTypeFromMode(mode);
 
                     bool want;
                     // Treat Exception/Assert as errors for filtering convenience
@@ -606,54 +602,13 @@ namespace MCPForUnity.Editor.Tools
         // (Calibration helpers removed)
 
         /// <summary>
-        /// Classifies severity using message/stacktrace content. Works across Unity versions.
-        /// </summary>
-        private static LogType InferTypeFromMessage(string fullMessage)
-        {
-            if (string.IsNullOrEmpty(fullMessage)) return LogType.Log;
-
-            // Fast path: look for explicit Debug API names in the appended stack trace
-            // e.g., "UnityEngine.Debug:LogError (object)" or "LogWarning"
-            if (fullMessage.IndexOf("LogError", StringComparison.OrdinalIgnoreCase) >= 0)
-                return LogType.Error;
-            if (fullMessage.IndexOf("LogWarning", StringComparison.OrdinalIgnoreCase) >= 0)
-                return LogType.Warning;
-
-            // Compiler diagnostics (C#): "warning CSxxxx" / "error CSxxxx"
-            if (fullMessage.IndexOf(" warning CS", StringComparison.OrdinalIgnoreCase) >= 0
-                || fullMessage.IndexOf(": warning CS", StringComparison.OrdinalIgnoreCase) >= 0)
-                return LogType.Warning;
-            if (fullMessage.IndexOf(" error CS", StringComparison.OrdinalIgnoreCase) >= 0
-                || fullMessage.IndexOf(": error CS", StringComparison.OrdinalIgnoreCase) >= 0)
-                return LogType.Error;
-
-            // Exceptions (avoid misclassifying compiler diagnostics)
-            if (fullMessage.IndexOf("Exception", StringComparison.OrdinalIgnoreCase) >= 0)
-                return LogType.Exception;
-
-            // Unity assertions
-            if (fullMessage.IndexOf("Assertion", StringComparison.OrdinalIgnoreCase) >= 0)
-                return LogType.Assert;
-
-            return LogType.Log;
-        }
-
-        private static bool IsExplicitDebugLog(string fullMessage)
-        {
-            if (string.IsNullOrEmpty(fullMessage)) return false;
-            if (fullMessage.IndexOf("Debug:Log (", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-            if (fullMessage.IndexOf("UnityEngine.Debug:Log (", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-            return false;
-        }
-
-        /// <summary>
         /// Splits a Unity log message into its body and appended stack trace.
         /// Unity concatenates both, separated by newlines, so the body may span
         /// several lines before the stack trace begins.
         /// </summary>
         /// <param name="fullMessage">The complete log message including any appended stack trace.</param>
         /// <returns>The message body (line endings normalized to "\n", internal blank lines preserved) and the stack trace, or null when none is found.</returns>
-        private static (string body, string stackTrace) SplitMessageAndStackTrace(string fullMessage)
+        internal static (string body, string stackTrace) SplitMessageAndStackTrace(string fullMessage)
         {
             if (string.IsNullOrEmpty(fullMessage))
                 return (fullMessage, null);
@@ -685,6 +640,7 @@ namespace MCPForUnity.Editor.Tools
                 // Check for common stack trace patterns.
                 if (
                     trimmedLine.StartsWith("at ")
+                    || IsNativeStackFrame(trimmedLine)
                     || trimmedLine.StartsWith("UnityEngine.")
                     || trimmedLine.StartsWith("UnityEditor.")
                     || trimmedLine.Contains("(at ")
@@ -702,6 +658,26 @@ namespace MCPForUnity.Editor.Tools
             }
 
             return -1;
+        }
+
+        // Native frames Unity appends when Stack Trace Logging is set to Full, e.g.
+        // "0x00007ffd387f224e (Unity) StackWalker::ShowCallstack".
+        private static bool IsNativeStackFrame(string line)
+        {
+            if (!line.StartsWith("0x", StringComparison.Ordinal))
+                return false;
+
+            int i = 2;
+            while (i < line.Length && Uri.IsHexDigit(line[i]))
+                i++;
+
+            // A pointer-width address, a "(Module)" label and a symbol after it.
+            int digits = i - 2;
+            if ((digits != 8 && digits != 16) || string.CompareOrdinal(line, i, " (", 0, 2) != 0)
+                return false;
+
+            int close = line.IndexOf(") ", i + 2, StringComparison.Ordinal);
+            return close > i + 2 && close + 2 < line.Length;
         }
 
         /* LogEntry.mode bits exploration (based on Unity decompilation/observation):
