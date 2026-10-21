@@ -27,7 +27,7 @@ namespace MCPForUnity.Editor.Tools.Sprite2D
             // pixels, and the inline image below is the source file. Max Size, or NPOT
             // scaling on a Default-type import, makes the imported texture smaller than
             // the file, so its size would not match either.
-            importer.GetSourceTextureWidthAndHeight(out int w, out int h);
+            GetSourceTextureSize(importer, path, out int w, out int h);
 
             // Paged because this reads what is already on the asset: the 4096 ceiling
             // slice_sheet applies when WRITING never bounded a sheet sliced by hand.
@@ -164,6 +164,58 @@ namespace MCPForUnity.Editor.Tools.Sprite2D
                 image_base64  = imageBase64,
                 image_omitted_reason = imageOmittedReason,
             };
+        }
+
+        /// <summary>Source-pixel size of the texture file behind <paramref name="importer"/>.</summary>
+        private static void GetSourceTextureSize(TextureImporter importer, string path, out int w, out int h)
+        {
+#if UNITY_2021_2_OR_NEWER
+            importer.GetSourceTextureWidthAndHeight(out w, out h);
+#else
+            // Unity 2020.3 has no TextureImporter.GetSourceTextureWidthAndHeight: decode the
+            // source file into a throwaway texture to measure source pixels. The imported
+            // texture size can differ (Max Size, NPOT scaling), so texture.width is only
+            // a last-resort fallback.
+            w = 0;
+            h = 0;
+            try
+            {
+                string projectRoot = Directory.GetParent(Application.dataPath)?.FullName;
+                if (projectRoot != null)
+                {
+                    string fullPath = Path.Combine(projectRoot, path);
+                    if (File.Exists(fullPath))
+                    {
+                        var probe = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                        try
+                        {
+                            if (probe.LoadImage(File.ReadAllBytes(fullPath)))
+                            {
+                                w = probe.width;
+                                h = probe.height;
+                            }
+                        }
+                        finally
+                        {
+                            UnityEngine.Object.DestroyImmediate(probe);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                McpLog.Warn($"[Sprite2D] could not measure source size of '{path}': {ex.GetType().Name}");
+            }
+            if (w <= 0 || h <= 0)
+            {
+                var texture = AssetDatabase.LoadAssetAtPath<Texture2D>(path);
+                if (texture != null)
+                {
+                    w = texture.width;
+                    h = texture.height;
+                }
+            }
+#endif
         }
 
         /// <summary>Every importer field slice_sheet writes, so a refusal can put all of them back.</summary>
@@ -304,7 +356,7 @@ namespace MCPForUnity.Editor.Tools.Sprite2D
             // which Max Size shrinks. Measured on 6000.6.4f1: a 4096x256 sheet at the default
             // Max Size of 2048 imported at 2048x128, and an 8-column grid cut from that size
             // gave 8 sprites over the left half of the sheet, each half a frame, as a success.
-            importer.GetSourceTextureWidthAndHeight(out int texW, out int texH);
+            GetSourceTextureSize(importer, path, out int texW, out int texH);
 
             if (frameW <= 0) frameW = texW / cols;
             if (frameH <= 0) frameH = texH / rows;
