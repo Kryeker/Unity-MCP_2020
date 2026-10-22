@@ -153,6 +153,9 @@ namespace MCPForUnity.Editor.Services
                 _currentJobId = null;
             }
             PersistToSessionState(force: true);
+            // The orphaned run may have left Enter Play Mode options forced on.
+            // RestoreIfIdle would skip while a job id is set, so restore here.
+            PlayModeOptionsGuard.Restore();
             return cleared;
         }
 
@@ -269,6 +272,8 @@ namespace MCPForUnity.Editor.Services
                                 currentJob.Error = "Job orphaned after domain reload";
                                 currentJob.FinishedUnixMs = now;
                                 _currentJobId = null;
+                                // The orphaned run may have left Enter Play Mode options forced on.
+                                PlayModeOptionsGuard.Restore();
                             }
                         }
                     }
@@ -579,6 +584,8 @@ namespace MCPForUnity.Editor.Services
                             // RunStarted nor RunFinished fires, so the running flag would otherwise leak.
                             // Only clear it if this job is still the active one — a newer job may have taken over.
                             TestRunStatus.MarkFinished();
+                            // The timed-out run may have left Enter Play Mode options forced on.
+                            PlayModeOptionsGuard.Restore();
                         }
                         shouldPersist = true;
                     }
