@@ -102,7 +102,7 @@ namespace MCPForUnity.Editor.Services
                     try
                     {
                         File.WriteAllText(tempPath, reverted);
-                        File.Replace(tempPath, EditorSettingsPath, null);
+                        WriteRevertedWithRetry(tempPath, EditorSettingsPath, reverted);
                     }
                     finally
                     {
@@ -117,6 +117,38 @@ namespace MCPForUnity.Editor.Services
             {
                 McpLog.Warn($"[PlayModeOptionsGuard] Failed to update {EditorSettingsPath}: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Writes the reverted settings YAML back to disk. <c>File.Replace</c> can lose a
+        /// race with the editor itself: Unity keeps <c>ProjectSettings/EditorSettings.asset</c>
+        /// open for auto-save, so replacing it right after a domain reload or a PlayMode
+        /// transition throws (verified: "Win32 IO returned 1175"). Retry a few times, then
+        /// fall back to a direct overwrite, which keeps the file identity Unity watches.
+        /// A failure still propagates to the caller's warning.
+        /// </summary>
+        private static void WriteRevertedWithRetry(string tempPath, string destinationPath, string reverted)
+        {
+            const int attempts = 5;
+            for (int i = 0; i < attempts; i++)
+            {
+                try
+                {
+                    File.Replace(tempPath, destinationPath, null);
+                    return;
+                }
+                catch (IOException)
+                {
+                    if (i == attempts - 1)
+                    {
+                        break;
+                    }
+
+                    Thread.Sleep(150);
+                }
+            }
+
+            File.WriteAllText(destinationPath, reverted);
         }
 
         internal static string RevertTemporaryValues(string settingsYaml, bool originalEnabled, EnterPlayModeOptions originalOptions)
@@ -294,6 +326,15 @@ namespace MCPForUnity.Editor.Services
 
                 if (mode == TestMode.PlayMode)
                 {
+                    // A previous run killed externally (e.g. PlayMode exited by hand) leaves the
+                    // temporary values applied with a restore still pending. Without restoring
+                    // first, the live API reads back the temporary values as "originals": the
+                    // needsChange check below then early-outs, and every later run skips both
+                    // Save and restore (verified ratchet: marker stuck, EditorSettings.asset
+                    // dirty across runs). RestoreIfIdle is a no-op unless a restore is pending
+                    // and no run is active, so this is safe on the clean path.
+                    PlayModeOptionsGuard.RestoreIfIdle();
+
                     // PlayMode runs transition the editor into play across multiple update ticks. Unity's
                     // built-in pipeline schedules SaveModifiedSceneTask early, but that task uses
                     // EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo which throws once play mode is
