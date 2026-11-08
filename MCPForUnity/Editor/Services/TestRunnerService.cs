@@ -641,12 +641,23 @@ namespace MCPForUnity.Editor.Services
             return true;
         }
 
+        // The awaiting continuation can pump while the editor is still in (or exiting)
+        // PlayMode, where writing EditorSettings can throw. Either restore fully or keep
+        // the pending marker so the next load / run start retries in EditMode — never
+        // drop the marker with the values unrestored (verified: stuck dirty file).
         private static void RestoreEnterPlayModeOptions(bool originalEnabled, EnterPlayModeOptions originalOptions)
         {
-            EditorSettings.enterPlayModeOptions = originalOptions;
-            EditorSettings.enterPlayModeOptionsEnabled = originalEnabled;
-            PlayModeOptionsGuard.RevertSettingsFile(originalEnabled, originalOptions);
-            PlayModeOptionsGuard.Clear();
+            try
+            {
+                EditorSettings.enterPlayModeOptions = originalOptions;
+                EditorSettings.enterPlayModeOptionsEnabled = originalEnabled;
+                PlayModeOptionsGuard.RevertSettingsFile(originalEnabled, originalOptions);
+                PlayModeOptionsGuard.Clear();
+            }
+            catch (Exception ex)
+            {
+                McpLog.Warn($"[PlayModeOptionsGuard] Failed to restore enterPlayModeOptions, will retry on next load: {ex.Message}");
+            }
         }
 
         private static void SaveDirtyScenesIfNeeded()
